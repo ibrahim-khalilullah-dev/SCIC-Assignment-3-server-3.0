@@ -248,6 +248,107 @@ app.get(
   },
 );
 
+app.post("/api/auth/logout", (req: Request, res: Response): any => {
+  res.clearCookie("token", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+    path: "/",
+  });
+  return res.status(200).json({
+    success: true,
+    message: "Logged out successfully",
+  });
+});
+
+app.post(
+  "/api/auth/google",
+  async (req: Request, res: Response, next: NextFunction): Promise<any> => {
+    try {
+      const { idToken } = req.body;
+
+      if (!idToken) {
+        return res.status(400).json({
+          success: false,
+          message: "Google ID Token is required",
+        });
+      }
+
+      const googleResponse = await fetch(
+        `https://oauth2.googleapis.com/tokeninfo?id_token=${idToken}`,
+      );
+
+      if (!googleResponse.ok) {
+        return res.status(401).json({
+          success: false,
+          message: "Invalid Google token",
+        });
+      }
+
+      const payload = await googleResponse.json();
+
+      const googleClientId = process.env.GOOGLE_CLIENT_ID;
+      if (googleClientId && payload.aud !== googleClientId) {
+        return res.status(401).json({
+          success: false,
+          message: "Client ID verification failed",
+        });
+      }
+
+      const { email, name } = payload;
+      if (!email) {
+        return res.status(400).json({
+          success: false,
+          message: "Email not retrieved from Google profile",
+        });
+      }
+
+      const db = getDb();
+      let user = await db.collection<TUser>("users").findOne({ email });
+
+      if (!user) {
+        const newUser: TUser = {
+          username: name || email.split("@")[0],
+          email,
+          role: "user",
+          createdAt: new Date(),
+        };
+        const result = await db.collection<TUser>("users").insertOne(newUser);
+        user = { _id: result.insertedId, ...newUser };
+      }
+
+      const secret =
+        process.env.ACCESS_TOKEN_SECRET ||
+        "fallback_token_secret_string_pap_key";
+      const token = jwt.sign(
+        { id: user._id?.toString(), email: user.email, role: user.role },
+        secret,
+        { expiresIn: "1d" },
+      );
+
+      res.cookie("token", token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+        maxAge: 24 * 60 * 60 * 1000,
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: "Google login successful",
+        user: {
+          id: user._id?.toString(),
+          username: user.username,
+          email: user.email,
+          role: user.role,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
 app.use((req: Request, res: Response, next: NextFunction) => {
   res.status(404).json({
     success: false,
