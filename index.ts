@@ -2,7 +2,10 @@ import dotenv from "dotenv";
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
-import { connectDB } from "./db";
+import jwt from "jsonwebtoken";
+import { connectDB, getDb } from "./db";
+import { hashPassword } from "./utils/authHelper";
+import { TUser } from "./types";
 
 dotenv.config();
 
@@ -32,6 +35,75 @@ app.use(cookieParser());
 app.get("/", (req: Request, res: Response) => {
   res.send("Server is up and running!");
 });
+
+app.post(
+  "/api/auth/signup",
+  async (req: Request, res: Response, next: NextFunction): Promise<any> => {
+    try {
+      const { username, email, password } = req.body;
+
+      if (!username || !email || !password) {
+        return res.status(400).json({
+          success: false,
+          message: "All fields are required",
+        });
+      }
+
+      const db = getDb();
+      const existingUser = await db
+        .collection<TUser>("users")
+        .findOne({ email });
+
+      if (existingUser) {
+        return res.status(400).json({
+          success: false,
+          message: "User already exists with this email",
+        });
+      }
+
+      const hashedPassword = await hashPassword(password);
+
+      const newUser: TUser = {
+        username,
+        email,
+        password: hashedPassword,
+        role: "user",
+        createdAt: new Date(),
+      };
+
+      const result = await db.collection<TUser>("users").insertOne(newUser);
+
+      const secret =
+        process.env.ACCESS_TOKEN_SECRET ||
+        "fallback_token_secret_string_pap_key";
+      const token = jwt.sign(
+        { id: result.insertedId.toString(), email, role: "user" },
+        secret,
+        { expiresIn: "1d" },
+      );
+
+      res.cookie("token", token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+        maxAge: 24 * 60 * 60 * 1000,
+      });
+
+      return res.status(201).json({
+        success: true,
+        message: "User registered successfully",
+        user: {
+          id: result.insertedId.toString(),
+          username,
+          email,
+          role: "user",
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
 
 app.use((req: Request, res: Response, next: NextFunction) => {
   res.status(404).json({
