@@ -6,7 +6,7 @@ import jwt from "jsonwebtoken";
 import { ObjectId } from "mongodb";
 import { connectDB, getDb } from "./db";
 import { hashPassword, comparePassword } from "./utils/authHelper";
-import { TUser } from "./types";
+import { TUser, TProduct } from "./types";
 
 dotenv.config();
 
@@ -342,6 +342,94 @@ app.post(
           email: user.email,
           role: user.role,
         },
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+app.get(
+  "/api/products",
+  async (req: Request, res: Response, next: NextFunction): Promise<any> => {
+    try {
+      const { search, category, minPrice, maxPrice } = req.query;
+      const db = getDb();
+      const query: any = {};
+
+      if (search) {
+        query.title = { $regex: search as string, $options: "i" };
+      }
+
+      if (category) {
+        query.category = category as string;
+      }
+
+      if (minPrice || maxPrice) {
+        query.price = {};
+        if (minPrice) query.price.$gte = Number(minPrice);
+        if (maxPrice) query.price.$lte = Number(maxPrice);
+      }
+
+      const products = await db
+        .collection<TProduct>("products")
+        .find(query)
+        .toArray();
+
+      const formattedProducts = products.map((product) => ({
+        id: product._id?.toString(),
+        title: product.title,
+        description: product.description,
+        category: product.category,
+        image: product.image,
+        price: product.price,
+        rating: product.rating,
+        stock: product.stock,
+        featured: product.featured,
+      }));
+
+      return res.status(200).json(formattedProducts);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+app.get(
+  "/api/products/:id",
+  async (req: Request, res: Response, next: NextFunction): Promise<any> => {
+    try {
+      const { id } = req.params;
+      const db = getDb();
+
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid product identifier",
+        });
+      }
+
+      const product = await db
+        .collection<TProduct>("products")
+        .findOne({ _id: new ObjectId(id) });
+
+      if (!product) {
+        return res.status(404).json({
+          success: false,
+          message: "Product not found",
+        });
+      }
+
+      return res.status(200).json({
+        id: product._id?.toString(),
+        title: product.title,
+        description: product.description,
+        category: product.category,
+        image: product.image,
+        price: product.price,
+        rating: product.rating,
+        stock: product.stock,
+        featured: product.featured,
       });
     } catch (error) {
       next(error);
