@@ -2,6 +2,7 @@ import dotenv from "dotenv";
 import express, { Request, Response } from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
+import { connectDB } from "./db";
 
 dotenv.config();
 
@@ -32,10 +33,21 @@ app.get("/", (req: Request, res: Response) => {
   res.send("Server is up and running!");
 });
 
-if (process.env.NODE_ENV !== "production") {
-  app.listen(PORT, () => {
-    console.log(`Server listening on port ${PORT}`);
-  });
+async function startServer() {
+  try {
+    await connectDB();
+
+    if (process.env.NODE_ENV !== "production") {
+      app.listen(PORT, () => {
+        console.log(`Server listening on port ${PORT}`);
+      });
+    }
+  } catch (error) {
+    console.error("Failed to start server:", error);
+    process.exit(1);
+  }
 }
+
+startServer();
 
 export { app };
