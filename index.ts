@@ -437,6 +437,151 @@ app.get(
   },
 );
 
+app.post(
+  "/api/products",
+  verifyToken,
+  async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<any> => {
+    try {
+      const db = getDb();
+      const {
+        title,
+        description,
+        category,
+        image,
+        price,
+        rating,
+        stock,
+        featured,
+      } = req.body;
+
+      if (!title || !category || !price || !image) {
+        return res.status(400).json({
+          success: false,
+          message: "Title, category, price, and image are required",
+        });
+      }
+
+      const newProduct: TProduct = {
+        title,
+        description: description || "",
+        category,
+        image,
+        price: Number(price),
+        rating: Number(rating) || 0,
+        stock: Number(stock) || 0,
+        featured: Boolean(featured),
+        createdAt: new Date(),
+      };
+
+      const result = await db
+        .collection<TProduct>("products")
+        .insertOne(newProduct);
+
+      return res.status(201).json({
+        success: true,
+        message: "Product created successfully",
+        id: result.insertedId.toString(),
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+app.put(
+  "/api/products/:id",
+  verifyToken,
+  async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<any> => {
+    try {
+      const { id } = req.params;
+      const db = getDb();
+
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid product identifier",
+        });
+      }
+
+      const updates = { ...req.body };
+      delete updates._id;
+      delete updates.id;
+
+      if (updates.price) updates.price = Number(updates.price);
+      if (updates.rating) updates.rating = Number(updates.rating);
+      if (updates.stock) updates.stock = Number(updates.stock);
+      if (updates.featured !== undefined)
+        updates.featured = Boolean(updates.featured);
+
+      const result = await db
+        .collection<TProduct>("products")
+        .updateOne({ _id: new ObjectId(id) }, { $set: updates });
+
+      if (result.matchedCount === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Product not found",
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: "Product updated successfully",
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+app.delete(
+  "/api/products/:id",
+  verifyToken,
+  async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<any> => {
+    try {
+      const { id } = req.params;
+      const db = getDb();
+
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid product identifier",
+        });
+      }
+
+      const result = await db.collection<TProduct>("products").deleteOne({
+        _id: new ObjectId(id),
+      });
+
+      if (result.deletedCount === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Product not found",
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: "Product deleted successfully",
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
 app.use((req: Request, res: Response, next: NextFunction) => {
   res.status(404).json({
     success: false,
