@@ -3,6 +3,7 @@ import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import jwt from "jsonwebtoken";
+import { ObjectId } from "mongodb";
 import { connectDB, getDb } from "./db";
 import { hashPassword, comparePassword } from "./utils/authHelper";
 import { TUser } from "./types";
@@ -31,6 +32,42 @@ app.use(
 
 app.use(express.json());
 app.use(cookieParser());
+
+interface AuthenticatedRequest extends Request {
+  user?: {
+    id: string;
+    email: string;
+    role: string;
+  };
+}
+
+function verifyToken(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+): any {
+  const token = req.cookies?.token;
+
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      message: "Unauthorized: No token provided",
+    });
+  }
+
+  const secret =
+    process.env.ACCESS_TOKEN_SECRET || "fallback_token_secret_string_pap_key";
+  jwt.verify(token, secret, (err: any, decoded: any) => {
+    if (err) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized: Invalid token",
+      });
+    }
+    req.user = decoded as { id: string; email: string; role: string };
+    next();
+  });
+}
 
 app.get("/", (req: Request, res: Response) => {
   res.send("Server is up and running!");
@@ -162,6 +199,48 @@ app.post(
           email: user.email,
           role: user.role,
         },
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+app.get(
+  "/api/auth/me",
+  verifyToken,
+  async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<any> => {
+    try {
+      const db = getDb();
+      const userId = req.user?.id;
+
+      if (!userId) {
+        return res.status(401).json({
+          success: false,
+          message: "Unauthorized",
+        });
+      }
+
+      const user = await db
+        .collection<TUser>("users")
+        .findOne({ _id: new ObjectId(userId) });
+
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: "User not found",
+        });
+      }
+
+      return res.status(200).json({
+        id: user._id?.toString(),
+        name: user.username,
+        email: user.email,
+        role: user.role,
       });
     } catch (error) {
       next(error);
