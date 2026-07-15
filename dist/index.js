@@ -87,78 +87,21 @@ function verifyAdmin(req, res, next) {
     }
     next();
 }
-async function seedDemoUsers() {
-    try {
-        const db = (0, db_1.getDb)();
-        const adminEmail = "admin@nextmart.com";
-        const userEmail = "user@nextmart.com";
-        const verifiedSellerEmail = "verified@nextmart.com";
-        const newSellerEmail = "new@nextmart.com";
-        const adminExists = await db
-            .collection("users")
-            .findOne({ email: adminEmail });
-        if (!adminExists) {
-            const hash = await (0, authHelper_1.hashPassword)("admin123");
-            await db.collection("users").insertOne({
-                username: "Admin Demo",
-                email: adminEmail,
-                password: hash,
-                role: "admin",
-                verifiedReporter: true,
-                status: "active",
-                createdAt: new Date(),
-            });
-        }
-        const userExists = await db
-            .collection("users")
-            .findOne({ email: userEmail });
-        if (!userExists) {
-            const hash = await (0, authHelper_1.hashPassword)("user123");
-            await db.collection("users").insertOne({
-                username: "Customer Demo",
-                email: userEmail,
-                password: hash,
-                role: "user",
-                verifiedReporter: false,
-                status: "active",
-                createdAt: new Date(),
-            });
-        }
-        const verifiedExists = await db
-            .collection("users")
-            .findOne({ email: verifiedSellerEmail });
-        if (!verifiedExists) {
-            const hash = await (0, authHelper_1.hashPassword)("seller123");
-            await db.collection("users").insertOne({
-                username: "Verified Seller",
-                email: verifiedSellerEmail,
-                password: hash,
-                role: "reporter",
-                verifiedReporter: true,
-                status: "active",
-                createdAt: new Date(),
-            });
-        }
-        const newExists = await db
-            .collection("users")
-            .findOne({ email: newSellerEmail });
-        if (!newExists) {
-            const hash = await (0, authHelper_1.hashPassword)("seller123");
-            await db.collection("users").insertOne({
-                username: "New Seller",
-                email: newSellerEmail,
-                password: hash,
-                role: "reporter",
-                verifiedReporter: false,
-                status: "active",
-                createdAt: new Date(),
-            });
-        }
-    }
-    catch (error) {
-        console.error("Failed to seed demo users:", error);
-    }
-}
+const mapProduct = (p) => ({
+    id: p._id?.toString(),
+    title: p.title,
+    description: p.description,
+    category: p.category,
+    image: p.image,
+    price: p.price,
+    rating: p.rating,
+    stock: p.stock,
+    featured: p.featured,
+    sellerId: p.sellerId,
+    sellerName: p.sellerName,
+    sellerEmail: p.sellerEmail,
+    status: p.status,
+});
 app.get("/", (req, res) => {
     res.send("Server is up and running!");
 });
@@ -380,21 +323,7 @@ app.get("/api/products", async (req, res, next) => {
             .collection("products")
             .find(query)
             .toArray();
-        return res.status(200).json(products.map((p) => ({
-            id: p._id?.toString(),
-            title: p.title,
-            description: p.description,
-            category: p.category,
-            image: p.image,
-            price: p.price,
-            rating: p.rating,
-            stock: p.stock,
-            featured: p.featured,
-            sellerId: p.sellerId,
-            sellerName: p.sellerName,
-            sellerEmail: p.sellerEmail,
-            status: p.status,
-        })));
+        return res.status(200).json(products.map(mapProduct));
     }
     catch (error) {
         next(error);
@@ -404,28 +333,13 @@ app.get("/api/products/:id", async (req, res, next) => {
     try {
         const id = req.params.id;
         if (!mongodb_1.ObjectId.isValid(id))
-            return res.status(400).json({ success: false, message: "Invalid ID" });
-        const db = (0, db_1.getDb)();
-        const p = await db
+            return res.status(400).json({ success: false });
+        const p = await (0, db_1.getDb)()
             .collection("products")
             .findOne({ _id: new mongodb_1.ObjectId(id) });
-        if (!p)
-            return res.status(404).json({ success: false, message: "Not found" });
-        return res.status(200).json({
-            id: p._id?.toString(),
-            title: p.title,
-            description: p.description,
-            category: p.category,
-            image: p.image,
-            price: p.price,
-            rating: p.rating,
-            stock: p.stock,
-            featured: p.featured,
-            sellerId: p.sellerId,
-            sellerName: p.sellerName,
-            sellerEmail: p.sellerEmail,
-            status: p.status,
-        });
+        return p
+            ? res.status(200).json(mapProduct(p))
+            : res.status(404).json({ success: false });
     }
     catch (error) {
         next(error);
@@ -436,9 +350,7 @@ app.post("/api/products", verifyToken, verifyReporter, async (req, res, next) =>
         const db = (0, db_1.getDb)();
         const { title, description, category, image, price, rating, stock, featured, } = req.body;
         if (!title || !category || !price || !image)
-            return res
-                .status(400)
-                .json({ success: false, message: "Required fields missing" });
+            return res.status(400).json({ success: false });
         const result = await db.collection("products").insertOne({
             title,
             description: description || "",
@@ -466,7 +378,7 @@ app.put("/api/products/:id", verifyToken, verifyReporter, async (req, res, next)
     try {
         const id = req.params.id;
         if (!mongodb_1.ObjectId.isValid(id))
-            return res.status(400).json({ success: false, message: "Invalid ID" });
+            return res.status(400).json({ success: false });
         const db = (0, db_1.getDb)();
         const updates = { ...req.body };
         delete updates._id;
@@ -483,7 +395,7 @@ app.put("/api/products/:id", verifyToken, verifyReporter, async (req, res, next)
             .collection("products")
             .updateOne({ _id: new mongodb_1.ObjectId(id) }, { $set: updates });
         if (result.matchedCount === 0)
-            return res.status(404).json({ success: false, message: "Not found" });
+            return res.status(404).json({ success: false });
         return res.status(200).json({ success: true });
     }
     catch (error) {
@@ -494,13 +406,13 @@ app.delete("/api/products/:id", verifyToken, verifyReporter, async (req, res, ne
     try {
         const id = req.params.id;
         if (!mongodb_1.ObjectId.isValid(id))
-            return res.status(400).json({ success: false, message: "Invalid ID" });
+            return res.status(400).json({ success: false });
         const db = (0, db_1.getDb)();
         const result = await db
             .collection("products")
             .deleteOne({ _id: new mongodb_1.ObjectId(id) });
         if (result.deletedCount === 0)
-            return res.status(404).json({ success: false, message: "Not found" });
+            return res.status(404).json({ success: false });
         return res.status(200).json({ success: true });
     }
     catch (error) {
@@ -512,9 +424,7 @@ app.post("/api/create-checkout-session", verifyToken, async (req, res, next) => 
         const { type, productId, price } = req.body;
         const user = req.user;
         if (!user)
-            return res
-                .status(401)
-                .json({ success: false, message: "Unauthorized" });
+            return res.status(401).json({ success: false });
         const origin = req.headers.origin || "http://localhost:3000";
         let lineItems = [];
         let metadata = {};
@@ -546,7 +456,7 @@ app.post("/api/create-checkout-session", verifyToken, async (req, res, next) => 
                 .collection("products")
                 .findOne({ _id: new mongodb_1.ObjectId(productId) });
             if (!product)
-                return res.status(404).json({ success: false, message: "Not found" });
+                return res.status(404).json({ success: false });
             lineItems = [
                 {
                     price_data: {
@@ -737,21 +647,7 @@ app.get("/api/reporter/products", verifyToken, verifyReporter, async (req, res, 
             .collection("products")
             .find({ sellerId: req.user?.id })
             .toArray();
-        return res.status(200).json(products.map((p) => ({
-            id: p._id?.toString(),
-            title: p.title,
-            description: p.description,
-            category: p.category,
-            image: p.image,
-            price: p.price,
-            rating: p.rating,
-            stock: p.stock,
-            featured: p.featured,
-            sellerId: p.sellerId,
-            sellerName: p.sellerName,
-            sellerEmail: p.sellerEmail,
-            status: p.status,
-        })));
+        return res.status(200).json(products.map(mapProduct));
     }
     catch (error) {
         next(error);
@@ -801,21 +697,7 @@ app.get("/api/user/purchased-products", verifyToken, async (req, res, next) => {
             .collection("products")
             .find({ _id: { $in: productIds } })
             .toArray();
-        return res.status(200).json(products.map((p) => ({
-            id: p._id?.toString(),
-            title: p.title,
-            description: p.description,
-            category: p.category,
-            image: p.image,
-            price: p.price,
-            rating: p.rating,
-            stock: p.stock,
-            featured: p.featured,
-            sellerId: p.sellerId,
-            sellerName: p.sellerName,
-            sellerEmail: p.sellerEmail,
-            status: p.status,
-        })));
+        return res.status(200).json(products.map(mapProduct));
     }
     catch (error) {
         next(error);
@@ -843,7 +725,7 @@ app.patch("/api/admin/users/:id/role", verifyToken, verifyAdmin, async (req, res
         const id = req.params.id;
         const { role } = req.body;
         if (!mongodb_1.ObjectId.isValid(id))
-            return res.status(400).json({ success: false, message: "Invalid ID" });
+            return res.status(400).json({ success: false });
         const db = (0, db_1.getDb)();
         const result = await db
             .collection("users")
@@ -860,7 +742,7 @@ app.patch("/api/admin/users/:id/ban", verifyToken, verifyAdmin, async (req, res,
     try {
         const id = req.params.id;
         if (!mongodb_1.ObjectId.isValid(id))
-            return res.status(400).json({ success: false, message: "Invalid ID" });
+            return res.status(400).json({ success: false });
         const db = (0, db_1.getDb)();
         const result = await db
             .collection("users")
@@ -877,7 +759,7 @@ app.patch("/api/admin/users/:id/unban", verifyToken, verifyAdmin, async (req, re
     try {
         const id = req.params.id;
         if (!mongodb_1.ObjectId.isValid(id))
-            return res.status(400).json({ success: false, message: "Invalid ID" });
+            return res.status(400).json({ success: false });
         const db = (0, db_1.getDb)();
         const result = await db
             .collection("users")
@@ -894,7 +776,7 @@ app.delete("/api/admin/users/:id", verifyToken, verifyAdmin, async (req, res, ne
     try {
         const id = req.params.id;
         if (!mongodb_1.ObjectId.isValid(id))
-            return res.status(400).json({ success: false, message: "Invalid ID" });
+            return res.status(400).json({ success: false });
         const db = (0, db_1.getDb)();
         const result = await db
             .collection("users")
@@ -1008,7 +890,6 @@ app.use((err, req, res, next) => {
 async function startServer() {
     try {
         await (0, db_1.connectDB)();
-        await seedDemoUsers();
         if (process.env.NODE_ENV !== "production") {
             app.listen(PORT, () => {
                 console.log("Server listening on port " + PORT);

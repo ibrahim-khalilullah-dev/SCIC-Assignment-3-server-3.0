@@ -1212,7 +1212,6 @@ app.use((err: any, req: Request, res: Response, next: NextFunction) => {
 async function startServer() {
   try {
     await connectDB();
-    await seedDemoUsers();
     if (process.env.NODE_ENV !== "production") {
       app.listen(PORT, () => {
         console.log("Server listening on port " + PORT);
