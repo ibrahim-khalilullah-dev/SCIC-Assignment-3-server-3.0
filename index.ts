@@ -4,14 +4,19 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import jwt from "jsonwebtoken";
 import { ObjectId } from "mongodb";
+import Stripe from "stripe";
 import { connectDB, getDb } from "./db";
 import { hashPassword, comparePassword } from "./utils/authHelper";
-import { TUser, TProduct } from "./types";
+import { TUser, TProduct, TBookmark } from "./types";
 
 dotenv.config();
 
 const PORT = process.env.PORT || 5000;
 const app = express();
+
+const stripe = new Stripe(
+  process.env.STRIPE_SECRET_KEY || "sk_test_mock_key_for_vercel_startup_pass",
+);
 
 const allowedOrigins = [process.env.CLIENT_URL || "http://localhost:3000"];
 
@@ -692,6 +697,350 @@ app.delete(
       return res.status(200).json({
         success: true,
         message: "Product deleted successfully",
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+app.post(
+  "/api/create-checkout-session",
+  verifyToken,
+  async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<any> => {
+    try {
+      const { type, productId, price } = req.body;
+      const user = req.user;
+
+      if (!user) {
+        return res.status(401).json({
+          success: false,
+          message: "Unauthorized access",
+        });
+      }
+
+      const origin = req.headers.origin || "http://localhost:3000";
+      let lineItems: any[] = [];
+      let metadata: any = {};
+      let successUrl = "";
+      let cancelUrl = "";
+
+      if (type === "publishing fee") {
+        lineItems = [
+          {
+            price_data: {
+              currency: "usd",
+              product_data: {
+                name: "Vendor Lifetime Verification Fee",
+                description:
+                  "One-time security license to activate product publication desk",
+              },
+              unit_amount: Math.round(parseFloat(price) * 100),
+            },
+            quantity: 1,
+          },
+        ];
+
+        metadata = {
+          type: "publishing fee",
+          buyerEmail: user.email,
+        };
+
+        successUrl = `${origin}/dashboard/reporter/success?session_id={CHECKOUT_SESSION_ID}`;
+        cancelUrl = `${origin}/dashboard/reporter`;
+      } else if (type === "purchase" && productId) {
+        const db = getDb();
+        const product = await db
+          .collection<TProduct>("products")
+          .findOne({ _id: new ObjectId(productId) });
+
+        if (!product) {
+          return res.status(404).json({
+            success: false,
+            message: "Target product not found",
+          });
+        }
+
+        lineItems = [
+          {
+            price_data: {
+              currency: "usd",
+              product_data: {
+                name: product.title,
+                description: `Standard goods delivered by verified vendor: ${product.sellerName}`,
+              },
+              unit_amount: Math.round(product.price * 100),
+            },
+            quantity: 1,
+          },
+        ];
+
+        metadata = {
+          type: "purchase",
+          productId: product._id?.toString() || "",
+          buyerEmail: user.email,
+          sellerEmail: product.sellerEmail || "",
+          amount: product.price.toString(),
+        };
+
+        successUrl = `${origin}/products/success?session_id={CHECKOUT_SESSION_ID}&product_id=${product._id?.toString()}`;
+        cancelUrl = `${origin}/products/${product._id?.toString()}`;
+      } else {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid session checkout parameters",
+        });
+      }
+
+      const session = await stripe.checkout.sessions.create({
+        customer_email: user.email,
+        line_items: lineItems,
+        mode: "payment",
+        metadata: metadata,
+        success_url: successUrl,
+        cancel_url: cancelUrl,
+      });
+
+      return res.status(200).json({
+        id: session.id,
+        url: session.url,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+app.get(
+  "/api/verify-payment",
+  verifyToken,
+  async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<any> => {
+    try {
+      const { session_id } = req.query;
+
+      if (!session_id || typeof session_id !== "string") {
+        return res.status(400).json({
+          success: false,
+          message: "Stripe payment session identifier required",
+        });
+      }
+
+      const db = getDb();
+      const session = await stripe.checkout.sessions.retrieve(session_id);
+
+      if (session.payment_status !== "paid") {
+        return res.status(400).json({
+          success: false,
+          message: "Target checkout payment not finalized",
+        });
+      }
+
+      const existingTx = await db
+        .collection("transactions")
+        .findOne({ transactionId: session_id });
+
+      if (existingTx) {
+        return res.status(200).json({
+          success: true,
+          alreadyProcessed: true,
+          transaction: existingTx,
+        });
+      }
+
+      const metadata = (session.metadata || {}) as any;
+      const type = metadata.type;
+      const buyerEmail = metadata.buyerEmail;
+      const productId = metadata.productId;
+      const sellerEmail = metadata.sellerEmail;
+      const amount = session.amount_total ? session.amount_total / 100 : 0;
+
+      const txRecord = {
+        transactionId: session_id,
+        type,
+        productId: productId ? new ObjectId(productId) : null,
+        buyerEmail,
+        sellerEmail: sellerEmail || null,
+        amount,
+        createdAt: new Date(),
+      };
+
+      await db.collection("transactions").insertOne(txRecord);
+
+      if (type === "publishing fee") {
+        await db
+          .collection<TUser>("users")
+          .updateOne(
+            { email: buyerEmail },
+            { $set: { verifiedReporter: true, role: "reporter" } },
+          );
+      } else if (type === "purchase" && productId) {
+        const product = await db
+          .collection<TProduct>("products")
+          .findOne({ _id: new ObjectId(productId) });
+
+        if (product) {
+          const newStock = Math.max(0, product.stock - 1);
+          const newStatus = newStock === 0 ? "Sold" : "Available";
+
+          await db
+            .collection<TProduct>("products")
+            .updateOne(
+              { _id: new ObjectId(productId) },
+              { $set: { stock: newStock, status: newStatus } },
+            );
+        }
+      }
+
+      return res.status(200).json({
+        success: true,
+        transaction: txRecord,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+app.post(
+  "/api/bookmarks",
+  verifyToken,
+  async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<any> => {
+    try {
+      const { productId } = req.body;
+      const userId = req.user?.id;
+
+      if (!productId) {
+        return res.status(400).json({
+          success: false,
+          message: "Product identifier required",
+        });
+      }
+
+      if (!userId) {
+        return res.status(401).json({
+          success: false,
+          message: "Unauthorized",
+        });
+      }
+
+      const db = getDb();
+      const existingBookmark = await db
+        .collection<TBookmark>("bookmarks")
+        .findOne({ userId, productId });
+
+      if (existingBookmark) {
+        return res.status(400).json({
+          success: false,
+          message: "Product is already wishlisted",
+        });
+      }
+
+      const product = await db
+        .collection<TProduct>("products")
+        .findOne({ _id: new ObjectId(productId) });
+
+      if (!product) {
+        return res.status(404).json({
+          success: false,
+          message: "Catalog product not found",
+        });
+      }
+
+      const bookmark: TBookmark = {
+        userId,
+        productId,
+        productTitle: product.title,
+        productImage: product.image,
+        productPrice: product.price,
+        productCategory: product.category,
+        productSeller: product.sellerName,
+        createdAt: new Date(),
+      };
+
+      const result = await db
+        .collection<TBookmark>("bookmarks")
+        .insertOne(bookmark);
+
+      return res.status(201).json({
+        success: true,
+        id: result.insertedId.toString(),
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+app.get(
+  "/api/bookmarks",
+  verifyToken,
+  async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<any> => {
+    try {
+      const userId = req.user?.id;
+
+      if (!userId) {
+        return res.status(401).json({
+          success: false,
+          message: "Unauthorized",
+        });
+      }
+
+      const db = getDb();
+      const bookmarks = await db
+        .collection<TBookmark>("bookmarks")
+        .find({ userId })
+        .toArray();
+
+      return res.status(200).json(bookmarks);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+app.delete(
+  "/api/bookmarks/:productId",
+  verifyToken,
+  async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<any> => {
+    try {
+      const productId = req.params.productId as string;
+      const userId = req.user?.id;
+
+      if (!userId) {
+        return res.status(401).json({
+          success: false,
+          message: "Unauthorized",
+        });
+      }
+
+      const db = getDb();
+      const result = await db
+        .collection<TBookmark>("bookmarks")
+        .deleteOne({ userId, productId });
+
+      return res.status(200).json({
+        success: true,
+        deletedCount: result.deletedCount,
       });
     } catch (error) {
       next(error);

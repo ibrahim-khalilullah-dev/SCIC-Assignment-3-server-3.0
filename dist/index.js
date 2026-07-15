@@ -10,12 +10,14 @@ const cors_1 = __importDefault(require("cors"));
 const cookie_parser_1 = __importDefault(require("cookie-parser"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const mongodb_1 = require("mongodb");
+const stripe_1 = __importDefault(require("stripe"));
 const db_1 = require("./db");
 const authHelper_1 = require("./utils/authHelper");
 dotenv_1.default.config();
 const PORT = process.env.PORT || 5000;
 const app = (0, express_1.default)();
 exports.app = app;
+const stripe = new stripe_1.default(process.env.STRIPE_SECRET_KEY || "sk_test_mock_key_for_vercel_startup_pass");
 const allowedOrigins = [process.env.CLIENT_URL || "http://localhost:3000"];
 app.use((0, cors_1.default)({
     origin: (origin, callback) => {
@@ -534,6 +536,268 @@ app.delete("/api/products/:id", verifyToken, async (req, res, next) => {
         return res.status(200).json({
             success: true,
             message: "Product deleted successfully",
+        });
+    }
+    catch (error) {
+        next(error);
+    }
+});
+app.post("/api/create-checkout-session", verifyToken, async (req, res, next) => {
+    try {
+        const { type, productId, price } = req.body;
+        const user = req.user;
+        if (!user) {
+            return res.status(401).json({
+                success: false,
+                message: "Unauthorized access",
+            });
+        }
+        const origin = req.headers.origin || "http://localhost:3000";
+        let lineItems = [];
+        let metadata = {};
+        let successUrl = "";
+        let cancelUrl = "";
+        if (type === "publishing fee") {
+            lineItems = [
+                {
+                    price_data: {
+                        currency: "usd",
+                        product_data: {
+                            name: "Vendor Lifetime Verification Fee",
+                            description: "One-time security license to activate product publication desk",
+                        },
+                        unit_amount: Math.round(parseFloat(price) * 100),
+                    },
+                    quantity: 1,
+                },
+            ];
+            metadata = {
+                type: "publishing fee",
+                buyerEmail: user.email,
+            };
+            successUrl = `${origin}/dashboard/reporter/success?session_id={CHECKOUT_SESSION_ID}`;
+            cancelUrl = `${origin}/dashboard/reporter`;
+        }
+        else if (type === "purchase" && productId) {
+            const db = (0, db_1.getDb)();
+            const product = await db
+                .collection("products")
+                .findOne({ _id: new mongodb_1.ObjectId(productId) });
+            if (!product) {
+                return res.status(404).json({
+                    success: false,
+                    message: "Target product not found",
+                });
+            }
+            lineItems = [
+                {
+                    price_data: {
+                        currency: "usd",
+                        product_data: {
+                            name: product.title,
+                            description: `Standard goods delivered by verified vendor: ${product.sellerName}`,
+                        },
+                        unit_amount: Math.round(product.price * 100),
+                    },
+                    quantity: 1,
+                },
+            ];
+            metadata = {
+                type: "purchase",
+                productId: product._id?.toString() || "",
+                buyerEmail: user.email,
+                sellerEmail: product.sellerEmail || "",
+                amount: product.price.toString(),
+            };
+            successUrl = `${origin}/products/success?session_id={CHECKOUT_SESSION_ID}&product_id=${product._id?.toString()}`;
+            cancelUrl = `${origin}/products/${product._id?.toString()}`;
+        }
+        else {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid session checkout parameters",
+            });
+        }
+        const session = await stripe.checkout.sessions.create({
+            customer_email: user.email,
+            line_items: lineItems,
+            mode: "payment",
+            metadata: metadata,
+            success_url: successUrl,
+            cancel_url: cancelUrl,
+        });
+        return res.status(200).json({
+            id: session.id,
+            url: session.url,
+        });
+    }
+    catch (error) {
+        next(error);
+    }
+});
+app.get("/api/verify-payment", verifyToken, async (req, res, next) => {
+    try {
+        const { session_id } = req.query;
+        if (!session_id || typeof session_id !== "string") {
+            return res.status(400).json({
+                success: false,
+                message: "Stripe payment session identifier required",
+            });
+        }
+        const db = (0, db_1.getDb)();
+        const session = await stripe.checkout.sessions.retrieve(session_id);
+        if (session.payment_status !== "paid") {
+            return res.status(400).json({
+                success: false,
+                message: "Target checkout payment not finalized",
+            });
+        }
+        const existingTx = await db
+            .collection("transactions")
+            .findOne({ transactionId: session_id });
+        if (existingTx) {
+            return res.status(200).json({
+                success: true,
+                alreadyProcessed: true,
+                transaction: existingTx,
+            });
+        }
+        const metadata = (session.metadata || {});
+        const type = metadata.type;
+        const buyerEmail = metadata.buyerEmail;
+        const productId = metadata.productId;
+        const sellerEmail = metadata.sellerEmail;
+        const amount = session.amount_total ? session.amount_total / 100 : 0;
+        const txRecord = {
+            transactionId: session_id,
+            type,
+            productId: productId ? new mongodb_1.ObjectId(productId) : null,
+            buyerEmail,
+            sellerEmail: sellerEmail || null,
+            amount,
+            createdAt: new Date(),
+        };
+        await db.collection("transactions").insertOne(txRecord);
+        if (type === "publishing fee") {
+            await db
+                .collection("users")
+                .updateOne({ email: buyerEmail }, { $set: { verifiedReporter: true, role: "reporter" } });
+        }
+        else if (type === "purchase" && productId) {
+            const product = await db
+                .collection("products")
+                .findOne({ _id: new mongodb_1.ObjectId(productId) });
+            if (product) {
+                const newStock = Math.max(0, product.stock - 1);
+                const newStatus = newStock === 0 ? "Sold" : "Available";
+                await db
+                    .collection("products")
+                    .updateOne({ _id: new mongodb_1.ObjectId(productId) }, { $set: { stock: newStock, status: newStatus } });
+            }
+        }
+        return res.status(200).json({
+            success: true,
+            transaction: txRecord,
+        });
+    }
+    catch (error) {
+        next(error);
+    }
+});
+app.post("/api/bookmarks", verifyToken, async (req, res, next) => {
+    try {
+        const { productId } = req.body;
+        const userId = req.user?.id;
+        if (!productId) {
+            return res.status(400).json({
+                success: false,
+                message: "Product identifier required",
+            });
+        }
+        if (!userId) {
+            return res.status(401).json({
+                success: false,
+                message: "Unauthorized",
+            });
+        }
+        const db = (0, db_1.getDb)();
+        const existingBookmark = await db
+            .collection("bookmarks")
+            .findOne({ userId, productId });
+        if (existingBookmark) {
+            return res.status(400).json({
+                success: false,
+                message: "Product is already wishlisted",
+            });
+        }
+        const product = await db
+            .collection("products")
+            .findOne({ _id: new mongodb_1.ObjectId(productId) });
+        if (!product) {
+            return res.status(404).json({
+                success: false,
+                message: "Catalog product not found",
+            });
+        }
+        const bookmark = {
+            userId,
+            productId,
+            productTitle: product.title,
+            productImage: product.image,
+            productPrice: product.price,
+            productCategory: product.category,
+            productSeller: product.sellerName,
+            createdAt: new Date(),
+        };
+        const result = await db
+            .collection("bookmarks")
+            .insertOne(bookmark);
+        return res.status(201).json({
+            success: true,
+            id: result.insertedId.toString(),
+        });
+    }
+    catch (error) {
+        next(error);
+    }
+});
+app.get("/api/bookmarks", verifyToken, async (req, res, next) => {
+    try {
+        const userId = req.user?.id;
+        if (!userId) {
+            return res.status(401).json({
+                success: false,
+                message: "Unauthorized",
+            });
+        }
+        const db = (0, db_1.getDb)();
+        const bookmarks = await db
+            .collection("bookmarks")
+            .find({ userId })
+            .toArray();
+        return res.status(200).json(bookmarks);
+    }
+    catch (error) {
+        next(error);
+    }
+});
+app.delete("/api/bookmarks/:productId", verifyToken, async (req, res, next) => {
+    try {
+        const productId = req.params.productId;
+        const userId = req.user?.id;
+        if (!userId) {
+            return res.status(401).json({
+                success: false,
+                message: "Unauthorized",
+            });
+        }
+        const db = (0, db_1.getDb)();
+        const result = await db
+            .collection("bookmarks")
+            .deleteOne({ userId, productId });
+        return res.status(200).json({
+            success: true,
+            deletedCount: result.deletedCount,
         });
     }
     catch (error) {
