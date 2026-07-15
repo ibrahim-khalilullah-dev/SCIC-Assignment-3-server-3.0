@@ -1,4 +1,7 @@
+import dotenv from "dotenv";
 import { MongoClient, Db } from "mongodb";
+
+dotenv.config();
 
 const uri = process.env.MONGO_URI;
 if (!uri) {
@@ -9,13 +12,9 @@ const client = new MongoClient(uri);
 let db: Db;
 
 export async function connectDB(): Promise<void> {
-  try {
+  if (!db) {
     await client.connect();
     db = client.db("NextMart");
-    console.log("Database connected successfully to NextMart");
-  } catch (error) {
-    console.error("Database connection failed:", error);
-    throw error;
   }
 }
 

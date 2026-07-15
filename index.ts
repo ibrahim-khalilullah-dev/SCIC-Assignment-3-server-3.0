@@ -69,6 +69,51 @@ function verifyToken(
   });
 }
 
+async function seedDemoUsers() {
+  try {
+    const db = getDb();
+
+    const adminEmail = "admin@nextmart.com";
+    const userEmail = "user@nextmart.com";
+
+    const adminExists = await db
+      .collection<TUser>("users")
+      .findOne({ email: adminEmail });
+    if (!adminExists) {
+      const hashedAdminPassword = await hashPassword("admin123");
+      await db.collection<TUser>("users").insertOne({
+        username: "Admin Demo",
+        email: adminEmail,
+        password: hashedAdminPassword,
+        role: "admin",
+        verifiedReporter: true,
+        status: "active",
+        createdAt: new Date(),
+      });
+      console.log("Demo Administrator account seeded successfully.");
+    }
+
+    const userExists = await db
+      .collection<TUser>("users")
+      .findOne({ email: userEmail });
+    if (!userExists) {
+      const hashedUserPassword = await hashPassword("user123");
+      await db.collection<TUser>("users").insertOne({
+        username: "Customer Demo",
+        email: userEmail,
+        password: hashedUserPassword,
+        role: "user",
+        verifiedReporter: false,
+        status: "active",
+        createdAt: new Date(),
+      });
+      console.log("Demo Customer account seeded successfully.");
+    }
+  } catch (error) {
+    console.error("Failed to seed demo users:", error);
+  }
+}
+
 app.get("/", (req: Request, res: Response) => {
   res.send("Server is up and running!");
 });
@@ -105,6 +150,8 @@ app.post(
         email,
         password: hashedPassword,
         role: "user",
+        verifiedReporter: false,
+        status: "active",
         createdAt: new Date(),
       };
 
@@ -285,7 +332,7 @@ app.post(
         });
       }
 
-      const payload = await googleResponse.json();
+      const payload = (await googleResponse.json()) as any;
 
       const googleClientId = process.env.GOOGLE_CLIENT_ID;
       if (googleClientId && payload.aud !== googleClientId) {
@@ -311,6 +358,8 @@ app.post(
           username: name || email.split("@")[0],
           email,
           role: "user",
+          verifiedReporter: false,
+          status: "active",
           createdAt: new Date(),
         };
         const result = await db.collection<TUser>("users").insertOne(newUser);
@@ -386,6 +435,10 @@ app.get(
         rating: product.rating,
         stock: product.stock,
         featured: product.featured,
+        sellerId: product.sellerId,
+        sellerName: product.sellerName,
+        sellerEmail: product.sellerEmail,
+        status: product.status,
       }));
 
       return res.status(200).json(formattedProducts);
@@ -399,7 +452,7 @@ app.get(
   "/api/products/:id",
   async (req: Request, res: Response, next: NextFunction): Promise<any> => {
     try {
-      const { id } = req.params;
+      const id = req.params.id as string;
       const db = getDb();
 
       if (!ObjectId.isValid(id)) {
@@ -430,6 +483,10 @@ app.get(
         rating: product.rating,
         stock: product.stock,
         featured: product.featured,
+        sellerId: product.sellerId,
+        sellerName: product.sellerName,
+        sellerEmail: product.sellerEmail,
+        status: product.status,
       });
     } catch (error) {
       next(error);
@@ -474,6 +531,10 @@ app.post(
         rating: Number(rating) || 0,
         stock: Number(stock) || 0,
         featured: Boolean(featured),
+        sellerId: req.user?.id || "",
+        sellerName: req.user?.email.split("@")[0] || "",
+        sellerEmail: req.user?.email || "",
+        status: "Available",
         createdAt: new Date(),
       };
 
@@ -501,7 +562,7 @@ app.put(
     next: NextFunction,
   ): Promise<any> => {
     try {
-      const { id } = req.params;
+      const id = req.params.id as string;
       const db = getDb();
 
       if (!ObjectId.isValid(id)) {
@@ -551,7 +612,7 @@ app.delete(
     next: NextFunction,
   ): Promise<any> => {
     try {
-      const { id } = req.params;
+      const id = req.params.id as string;
       const db = getDb();
 
       if (!ObjectId.isValid(id)) {
@@ -600,6 +661,7 @@ app.use((err: any, req: Request, res: Response, next: NextFunction) => {
 async function startServer() {
   try {
     await connectDB();
+    await seedDemoUsers();
 
     if (process.env.NODE_ENV !== "production") {
       app.listen(PORT, () => {
