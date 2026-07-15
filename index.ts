@@ -113,6 +113,8 @@ async function seedDemoUsers() {
     const db = getDb();
     const adminEmail = "admin@nextmart.com";
     const userEmail = "user@nextmart.com";
+    const verifiedSellerEmail = "verified@nextmart.com";
+    const newSellerEmail = "new@nextmart.com";
 
     const adminExists = await db
       .collection<TUser>("users")
@@ -140,6 +142,38 @@ async function seedDemoUsers() {
         email: userEmail,
         password: hash,
         role: "user",
+        verifiedReporter: false,
+        status: "active",
+        createdAt: new Date(),
+      });
+    }
+
+    const verifiedExists = await db
+      .collection<TUser>("users")
+      .findOne({ email: verifiedSellerEmail });
+    if (!verifiedExists) {
+      const hash = await hashPassword("seller123");
+      await db.collection<TUser>("users").insertOne({
+        username: "Verified Seller",
+        email: verifiedSellerEmail,
+        password: hash,
+        role: "reporter",
+        verifiedReporter: true,
+        status: "active",
+        createdAt: new Date(),
+      });
+    }
+
+    const newExists = await db
+      .collection<TUser>("users")
+      .findOne({ email: newSellerEmail });
+    if (!newExists) {
+      const hash = await hashPassword("seller123");
+      await db.collection<TUser>("users").insertOne({
+        username: "New Seller",
+        email: newSellerEmail,
+        password: hash,
+        role: "reporter",
         verifiedReporter: false,
         status: "active",
         createdAt: new Date(),
