@@ -804,6 +804,244 @@ app.delete("/api/bookmarks/:productId", verifyToken, async (req, res, next) => {
         next(error);
     }
 });
+app.get("/api/reporter/products", verifyToken, verifyReporter, async (req, res, next) => {
+    try {
+        const db = (0, db_1.getDb)();
+        const products = await db
+            .collection("products")
+            .find({ sellerId: req.user?.id })
+            .toArray();
+        return res.status(200).json(products);
+    }
+    catch (error) {
+        next(error);
+    }
+});
+app.get("/api/reporter/sales", verifyToken, verifyReporter, async (req, res, next) => {
+    try {
+        const db = (0, db_1.getDb)();
+        const sales = await db
+            .collection("transactions")
+            .find({ sellerEmail: req.user?.email, type: "purchase" })
+            .sort({ createdAt: -1 })
+            .toArray();
+        return res.status(200).json(sales);
+    }
+    catch (error) {
+        next(error);
+    }
+});
+app.get("/api/user/purchases", verifyToken, async (req, res, next) => {
+    try {
+        const db = (0, db_1.getDb)();
+        const purchases = await db
+            .collection("transactions")
+            .find({ buyerEmail: req.user?.email, type: "purchase" })
+            .sort({ createdAt: -1 })
+            .toArray();
+        return res.status(200).json(purchases);
+    }
+    catch (error) {
+        next(error);
+    }
+});
+app.get("/api/user/purchased-products", verifyToken, async (req, res, next) => {
+    try {
+        const db = (0, db_1.getDb)();
+        const purchases = await db
+            .collection("transactions")
+            .find({ buyerEmail: req.user?.email, type: "purchase" })
+            .toArray();
+        const productIds = purchases
+            .filter((p) => p.productId)
+            .map((p) => new mongodb_1.ObjectId(p.productId.toString()));
+        if (productIds.length === 0) {
+            return res.status(200).json([]);
+        }
+        const products = await db
+            .collection("products")
+            .find({ _id: { $in: productIds } })
+            .toArray();
+        return res.status(200).json(products);
+    }
+    catch (error) {
+        next(error);
+    }
+});
+app.get("/api/admin/users", verifyToken, verifyAdmin, async (req, res, next) => {
+    try {
+        const db = (0, db_1.getDb)();
+        const users = await db.collection("users").find().toArray();
+        return res.status(200).json(users);
+    }
+    catch (error) {
+        next(error);
+    }
+});
+app.patch("/api/admin/users/:id/role", verifyToken, verifyAdmin, async (req, res, next) => {
+    try {
+        const id = req.params.id;
+        const { role } = req.body;
+        if (!mongodb_1.ObjectId.isValid(id)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid account identifier",
+            });
+        }
+        const db = (0, db_1.getDb)();
+        const result = await db
+            .collection("users")
+            .updateOne({ _id: new mongodb_1.ObjectId(id) }, { $set: { role } });
+        return res.status(200).json({
+            success: true,
+            matchedCount: result.matchedCount,
+        });
+    }
+    catch (error) {
+        next(error);
+    }
+});
+app.patch("/api/admin/users/:id/ban", verifyToken, verifyAdmin, async (req, res, next) => {
+    try {
+        const id = req.params.id;
+        if (!mongodb_1.ObjectId.isValid(id)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid account identifier",
+            });
+        }
+        const db = (0, db_1.getDb)();
+        const result = await db
+            .collection("users")
+            .updateOne({ _id: new mongodb_1.ObjectId(id) }, { $set: { status: "banned" } });
+        return res.status(200).json({
+            success: true,
+            matchedCount: result.matchedCount,
+        });
+    }
+    catch (error) {
+        next(error);
+    }
+});
+app.patch("/api/admin/users/:id/unban", verifyToken, verifyAdmin, async (req, res, next) => {
+    try {
+        const id = req.params.id;
+        if (!mongodb_1.ObjectId.isValid(id)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid account identifier",
+            });
+        }
+        const db = (0, db_1.getDb)();
+        const result = await db
+            .collection("users")
+            .updateOne({ _id: new mongodb_1.ObjectId(id) }, { $set: { status: "active" } });
+        return res.status(200).json({
+            success: true,
+            matchedCount: result.matchedCount,
+        });
+    }
+    catch (error) {
+        next(error);
+    }
+});
+app.delete("/api/admin/users/:id", verifyToken, verifyAdmin, async (req, res, next) => {
+    try {
+        const id = req.params.id;
+        if (!mongodb_1.ObjectId.isValid(id)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid account identifier",
+            });
+        }
+        const db = (0, db_1.getDb)();
+        const result = await db
+            .collection("users")
+            .deleteOne({ _id: new mongodb_1.ObjectId(id) });
+        return res.status(200).json({
+            success: true,
+            deletedCount: result.deletedCount,
+        });
+    }
+    catch (error) {
+        next(error);
+    }
+});
+app.get("/api/admin/products", verifyToken, verifyAdmin, async (req, res, next) => {
+    try {
+        const db = (0, db_1.getDb)();
+        const products = await db
+            .collection("products")
+            .find()
+            .sort({ createdAt: -1 })
+            .toArray();
+        return res.status(200).json(products);
+    }
+    catch (error) {
+        next(error);
+    }
+});
+app.get("/api/admin/transactions", verifyToken, verifyAdmin, async (req, res, next) => {
+    try {
+        const db = (0, db_1.getDb)();
+        const transactions = await db
+            .collection("transactions")
+            .find()
+            .sort({ createdAt: -1 })
+            .toArray();
+        return res.status(200).json(transactions);
+    }
+    catch (error) {
+        next(error);
+    }
+});
+app.get("/api/admin/analytics", verifyToken, verifyAdmin, async (req, res, next) => {
+    try {
+        const db = (0, db_1.getDb)();
+        const totalUsers = await db.collection("users").countDocuments();
+        const totalWriters = await db
+            .collection("users")
+            .countDocuments({ role: "reporter" });
+        const totalEbooks = await db.collection("products").countDocuments();
+        const totalSold = await db
+            .collection("products")
+            .countDocuments({ status: "Sold" });
+        const revenueAggr = await db
+            .collection("transactions")
+            .aggregate([{ $group: { _id: null, total: { $sum: "$amount" } } }])
+            .toArray();
+        const totalRevenue = revenueAggr[0]?.total || 0;
+        const genreAggr = await db
+            .collection("products")
+            .aggregate([{ $group: { _id: "$category", count: { $sum: 1 } } }])
+            .toArray();
+        const salesAggr = await db
+            .collection("transactions")
+            .aggregate([
+            { $match: { type: "purchase" } },
+            {
+                $group: {
+                    _id: { $dateToString: { format: "%Y-%m", date: "$createdAt" } },
+                    totalSales: { $sum: "$amount" },
+                },
+            },
+            { $sort: { _id: 1 } },
+        ])
+            .toArray();
+        return res.status(200).json({
+            totalUsers,
+            totalWriters,
+            totalEbooks,
+            totalSold,
+            totalRevenue,
+            genreAnalytics: genreAggr,
+            monthlySales: salesAggr,
+        });
+    }
+    catch (error) {
+        next(error);
+    }
+});
 app.use((req, res, next) => {
     res.status(404).json({
         success: false,
