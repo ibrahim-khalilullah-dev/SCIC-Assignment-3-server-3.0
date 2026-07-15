@@ -296,6 +296,35 @@ app.get(
   },
 );
 
+app.patch(
+  "/api/users/profile",
+  verifyToken,
+  async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<any> => {
+    try {
+      const { name, image } = req.body;
+      const db = getDb();
+      const updateDoc: any = {};
+      if (name) updateDoc.username = name;
+      if (image) updateDoc.image = image;
+
+      const result = await db
+        .collection<TUser>("users")
+        .updateOne({ _id: new ObjectId(req.user?.id) }, { $set: updateDoc });
+
+      return res.status(200).json({
+        success: true,
+        matchedCount: result.matchedCount,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
 app.post("/api/auth/logout", (req: Request, res: Response) => {
   res.clearCookie("token", {
     httpOnly: true,

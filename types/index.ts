@@ -8,6 +8,7 @@ export interface TUser {
   role: "user" | "reporter" | "admin";
   verifiedReporter: boolean;
   status: "active" | "banned";
+  image?: string;
   createdAt: Date;
 }
 

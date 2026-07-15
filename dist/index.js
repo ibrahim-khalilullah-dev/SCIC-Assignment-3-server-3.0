@@ -227,6 +227,27 @@ app.get("/api/auth/me", verifyToken, async (req, res, next) => {
         next(error);
     }
 });
+app.patch("/api/users/profile", verifyToken, async (req, res, next) => {
+    try {
+        const { name, image } = req.body;
+        const db = (0, db_1.getDb)();
+        const updateDoc = {};
+        if (name)
+            updateDoc.username = name;
+        if (image)
+            updateDoc.image = image;
+        const result = await db
+            .collection("users")
+            .updateOne({ _id: new mongodb_1.ObjectId(req.user?.id) }, { $set: updateDoc });
+        return res.status(200).json({
+            success: true,
+            matchedCount: result.matchedCount,
+        });
+    }
+    catch (error) {
+        next(error);
+    }
+});
 app.post("/api/auth/logout", (req, res) => {
     res.clearCookie("token", {
         httpOnly: true,
