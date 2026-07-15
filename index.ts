@@ -57,16 +57,72 @@ function verifyToken(
 
   const secret =
     process.env.ACCESS_TOKEN_SECRET || "fallback_token_secret_string_pap_key";
-  jwt.verify(token, secret, (err: any, decoded: any) => {
+  jwt.verify(token, secret, async (err: any, decoded: any) => {
     if (err) {
       return res.status(401).json({
         success: false,
         message: "Unauthorized: Invalid token",
       });
     }
-    req.user = decoded as { id: string; email: string; role: string };
-    next();
+
+    try {
+      const db = getDb();
+      const user = await db
+        .collection<TUser>("users")
+        .findOne({ _id: new ObjectId(decoded.id) });
+
+      if (!user) {
+        return res.status(401).json({
+          success: false,
+          message: "Unauthorized: User not found",
+        });
+      }
+
+      if (user.status === "banned") {
+        return res.status(403).json({
+          success: false,
+          message: "Your account has been banned.",
+        });
+      }
+
+      req.user = {
+        id: user._id?.toString() || "",
+        email: user.email,
+        role: user.role,
+      };
+      next();
+    } catch (error) {
+      next(error);
+    }
   });
+}
+
+function verifyReporter(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+): any {
+  if (req.user?.role !== "reporter" && req.user?.role !== "admin") {
+    return res.status(403).json({
+      success: false,
+      message: "Forbidden access. Reporter privileges required.",
+    });
+  }
+  next();
+}
+
+function verifyAdmin(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+): any {
+  if (req.user?.role !== "admin") {
+    return res.status(403).json({
+      success: false,
+      message: "Forbidden access. Administrator privileges required.",
+    });
+  }
+  next();
 }
 
 async function seedDemoUsers() {
