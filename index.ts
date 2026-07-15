@@ -43,6 +43,7 @@ interface AuthenticatedRequest extends Request {
     id: string;
     email: string;
     role: string;
+    verifiedReporter?: boolean;
   };
 }
 
@@ -75,6 +76,7 @@ async function verifyToken(
       id: user._id?.toString() || "",
       email: user.email,
       role: user.role,
+      verifiedReporter: user.verifiedReporter,
     };
     next();
   } catch {
@@ -92,6 +94,14 @@ function verifyReporter(
       .status(403)
       .json({ success: false, message: "Reporter privileges required" });
   }
+  if (req.user?.role === "reporter" && !req.user?.verifiedReporter) {
+    return res
+      .status(403)
+      .json({
+        success: false,
+        message: "Verification required. Please complete your fee payment.",
+      });
+  }
   next();
 }
 
@@ -108,81 +118,21 @@ function verifyAdmin(
   next();
 }
 
-async function seedDemoUsers() {
-  try {
-    const db = getDb();
-    const adminEmail = "admin@nextmart.com";
-    const userEmail = "user@nextmart.com";
-    const verifiedSellerEmail = "verified@nextmart.com";
-    const newSellerEmail = "new@nextmart.com";
-
-    const adminExists = await db
-      .collection<TUser>("users")
-      .findOne({ email: adminEmail });
-    if (!adminExists) {
-      const hash = await hashPassword("admin123");
-      await db.collection<TUser>("users").insertOne({
-        username: "Admin Demo",
-        email: adminEmail,
-        password: hash,
-        role: "admin",
-        verifiedReporter: true,
-        status: "active",
-        createdAt: new Date(),
-      });
-    }
-
-    const userExists = await db
-      .collection<TUser>("users")
-      .findOne({ email: userEmail });
-    if (!userExists) {
-      const hash = await hashPassword("user123");
-      await db.collection<TUser>("users").insertOne({
-        username: "Customer Demo",
-        email: userEmail,
-        password: hash,
-        role: "user",
-        verifiedReporter: false,
-        status: "active",
-        createdAt: new Date(),
-      });
-    }
-
-    const verifiedExists = await db
-      .collection<TUser>("users")
-      .findOne({ email: verifiedSellerEmail });
-    if (!verifiedExists) {
-      const hash = await hashPassword("seller123");
-      await db.collection<TUser>("users").insertOne({
-        username: "Verified Seller",
-        email: verifiedSellerEmail,
-        password: hash,
-        role: "reporter",
-        verifiedReporter: true,
-        status: "active",
-        createdAt: new Date(),
-      });
-    }
-
-    const newExists = await db
-      .collection<TUser>("users")
-      .findOne({ email: newSellerEmail });
-    if (!newExists) {
-      const hash = await hashPassword("seller123");
-      await db.collection<TUser>("users").insertOne({
-        username: "New Seller",
-        email: newSellerEmail,
-        password: hash,
-        role: "reporter",
-        verifiedReporter: false,
-        status: "active",
-        createdAt: new Date(),
-      });
-    }
-  } catch (error) {
-    console.error("Failed to seed demo users:", error);
-  }
-}
+const mapProduct = (p: any) => ({
+  id: p._id?.toString(),
+  title: p.title,
+  description: p.description,
+  category: p.category,
+  image: p.image,
+  price: p.price,
+  rating: p.rating,
+  stock: p.stock,
+  featured: p.featured,
+  sellerId: p.sellerId,
+  sellerName: p.sellerName,
+  sellerEmail: p.sellerEmail,
+  status: p.status,
+});
 
 app.get("/", (req: Request, res: Response) => {
   res.send("Server is up and running!");
@@ -239,6 +189,7 @@ app.post(
           username,
           email,
           role: "user",
+          verifiedReporter: false,
         },
       });
     } catch (error) {
@@ -292,6 +243,7 @@ app.post(
           username: user.username,
           email: user.email,
           role: user.role,
+          verifiedReporter: user.verifiedReporter,
         },
       });
     } catch (error) {
@@ -323,6 +275,7 @@ app.get(
           name: user.username,
           email: user.email,
           role: user.role,
+          verifiedReporter: user.verifiedReporter,
         });
     } catch (error) {
       next(error);
@@ -380,7 +333,7 @@ app.post(
           .json({ success: false, message: "Token missing" });
 
       const googleRes = await fetch(
-        `https://oauth2.googleapis.com/tokeninfo?id_token=${idToken}`,
+        "https://oauth2.googleapis.com/tokeninfo?id_token=" + idToken,
       );
       if (!googleRes.ok)
         return res
@@ -436,6 +389,7 @@ app.post(
           username: user.username,
           email: user.email,
           role: user.role,
+          verifiedReporter: user.verifiedReporter,
         },
       });
     } catch (error) {
@@ -464,23 +418,7 @@ app.get(
         .collection<TProduct>("products")
         .find(query)
         .toArray();
-      return res.status(200).json(
-        products.map((p) => ({
-          id: p._id?.toString(),
-          title: p.title,
-          description: p.description,
-          category: p.category,
-          image: p.image,
-          price: p.price,
-          rating: p.rating,
-          stock: p.stock,
-          featured: p.featured,
-          sellerId: p.sellerId,
-          sellerName: p.sellerName,
-          sellerEmail: p.sellerEmail,
-          status: p.status,
-        })),
-      );
+      return res.status(200).json(products.map(mapProduct));
     } catch (error) {
       next(error);
     }
@@ -493,30 +431,14 @@ app.get(
     try {
       const id = req.params.id as string;
       if (!ObjectId.isValid(id))
-        return res.status(400).json({ success: false, message: "Invalid ID" });
+        return res.status(400).json({ success: false });
 
-      const db = getDb();
-      const p = await db
+      const p = await getDb()
         .collection<TProduct>("products")
         .findOne({ _id: new ObjectId(id) });
-      if (!p)
-        return res.status(404).json({ success: false, message: "Not found" });
-
-      return res.status(200).json({
-        id: p._id?.toString(),
-        title: p.title,
-        description: p.description,
-        category: p.category,
-        image: p.image,
-        price: p.price,
-        rating: p.rating,
-        stock: p.stock,
-        featured: p.featured,
-        sellerId: p.sellerId,
-        sellerName: p.sellerName,
-        sellerEmail: p.sellerEmail,
-        status: p.status,
-      });
+      return p
+        ? res.status(200).json(mapProduct(p))
+        : res.status(404).json({ success: false });
     } catch (error) {
       next(error);
     }
@@ -526,6 +448,7 @@ app.get(
 app.post(
   "/api/products",
   verifyToken,
+  verifyReporter,
   async (
     req: AuthenticatedRequest,
     res: Response,
@@ -544,9 +467,7 @@ app.post(
         featured,
       } = req.body;
       if (!title || !category || !price || !image)
-        return res
-          .status(400)
-          .json({ success: false, message: "Required fields missing" });
+        return res.status(400).json({ success: false });
 
       const result = await db.collection<TProduct>("products").insertOne({
         title,
@@ -576,6 +497,7 @@ app.post(
 app.put(
   "/api/products/:id",
   verifyToken,
+  verifyReporter,
   async (
     req: AuthenticatedRequest,
     res: Response,
@@ -584,7 +506,7 @@ app.put(
     try {
       const id = req.params.id as string;
       if (!ObjectId.isValid(id))
-        return res.status(400).json({ success: false, message: "Invalid ID" });
+        return res.status(400).json({ success: false });
 
       const db = getDb();
       const updates = { ...req.body };
@@ -601,7 +523,7 @@ app.put(
         .collection<TProduct>("products")
         .updateOne({ _id: new ObjectId(id) }, { $set: updates });
       if (result.matchedCount === 0)
-        return res.status(404).json({ success: false, message: "Not found" });
+        return res.status(404).json({ success: false });
 
       return res.status(200).json({ success: true });
     } catch (error) {
@@ -613,6 +535,7 @@ app.put(
 app.delete(
   "/api/products/:id",
   verifyToken,
+  verifyReporter,
   async (
     req: AuthenticatedRequest,
     res: Response,
@@ -621,14 +544,14 @@ app.delete(
     try {
       const id = req.params.id as string;
       if (!ObjectId.isValid(id))
-        return res.status(400).json({ success: false, message: "Invalid ID" });
+        return res.status(400).json({ success: false });
 
       const db = getDb();
       const result = await db
         .collection<TProduct>("products")
         .deleteOne({ _id: new ObjectId(id) });
       if (result.deletedCount === 0)
-        return res.status(404).json({ success: false, message: "Not found" });
+        return res.status(404).json({ success: false });
 
       return res.status(200).json({ success: true });
     } catch (error) {
@@ -648,10 +571,7 @@ app.post(
     try {
       const { type, productId, price } = req.body;
       const user = req.user;
-      if (!user)
-        return res
-          .status(401)
-          .json({ success: false, message: "Unauthorized" });
+      if (!user) return res.status(401).json({ success: false });
 
       const origin = req.headers.origin || "http://localhost:3000";
       let lineItems: any[] = [];
@@ -674,15 +594,16 @@ app.post(
           },
         ];
         metadata = { type: "publishing fee", buyerEmail: user.email };
-        successUrl = `${origin}/dashboard/reporter/success?session_id={CHECKOUT_SESSION_ID}`;
-        cancelUrl = `${origin}/dashboard/reporter`;
+        successUrl =
+          origin +
+          "/dashboard/reporter/success?session_id={CHECKOUT_SESSION_ID}";
+        cancelUrl = origin + "/dashboard/reporter";
       } else if (type === "purchase" && productId) {
         const db = getDb();
         const product = await db
           .collection<TProduct>("products")
           .findOne({ _id: new ObjectId(productId) });
-        if (!product)
-          return res.status(404).json({ success: false, message: "Not found" });
+        if (!product) return res.status(404).json({ success: false });
 
         lineItems = [
           {
@@ -690,7 +611,7 @@ app.post(
               currency: "usd",
               product_data: {
                 name: product.title,
-                description: `Goods from seller: ${product.sellerName}`,
+                description: "Goods from seller: " + product.sellerName,
               },
               unit_amount: Math.round(product.price * 100),
             },
@@ -705,8 +626,11 @@ app.post(
           sellerEmail: product.sellerEmail || "",
           amount: product.price.toString(),
         };
-        successUrl = `${origin}/products/success?session_id={CHECKOUT_SESSION_ID}&product_id=${product._id?.toString()}`;
-        cancelUrl = `${origin}/products/${product._id?.toString()}`;
+        successUrl =
+          origin +
+          "/products/success?session_id={CHECKOUT_SESSION_ID}&product_id=" +
+          product._id?.toString();
+        cancelUrl = origin + "/products/" + product._id?.toString();
       } else {
         return res
           .status(400)
@@ -932,7 +856,7 @@ app.get(
         .collection<TProduct>("products")
         .find({ sellerId: req.user?.id })
         .toArray();
-      return res.status(200).json(products);
+      return res.status(200).json(products.map(mapProduct));
     } catch (error) {
       next(error);
     }
@@ -1008,7 +932,7 @@ app.get(
         .collection<TProduct>("products")
         .find({ _id: { $in: productIds } })
         .toArray();
-      return res.status(200).json(products);
+      return res.status(200).json(products.map(mapProduct));
     } catch (error) {
       next(error);
     }
@@ -1027,7 +951,16 @@ app.get(
     try {
       const db = getDb();
       const users = await db.collection<TUser>("users").find().toArray();
-      return res.status(200).json(users);
+      return res.status(200).json(
+        users.map((u) => ({
+          id: u._id?.toString(),
+          name: u.username,
+          email: u.email,
+          role: u.role,
+          status: u.status,
+          verifiedReporter: u.verifiedReporter,
+        })),
+      );
     } catch (error) {
       next(error);
     }
@@ -1047,7 +980,7 @@ app.patch(
       const id = req.params.id as string;
       const { role } = req.body;
       if (!ObjectId.isValid(id))
-        return res.status(400).json({ success: false, message: "Invalid ID" });
+        return res.status(400).json({ success: false });
 
       const db = getDb();
       const result = await db
@@ -1074,7 +1007,7 @@ app.patch(
     try {
       const id = req.params.id as string;
       if (!ObjectId.isValid(id))
-        return res.status(400).json({ success: false, message: "Invalid ID" });
+        return res.status(400).json({ success: false });
 
       const db = getDb();
       const result = await db
@@ -1101,7 +1034,7 @@ app.patch(
     try {
       const id = req.params.id as string;
       if (!ObjectId.isValid(id))
-        return res.status(400).json({ success: false, message: "Invalid ID" });
+        return res.status(400).json({ success: false });
 
       const db = getDb();
       const result = await db
@@ -1128,7 +1061,7 @@ app.delete(
     try {
       const id = req.params.id as string;
       if (!ObjectId.isValid(id))
-        return res.status(400).json({ success: false, message: "Invalid ID" });
+        return res.status(400).json({ success: false });
 
       const db = getDb();
       const result = await db
@@ -1159,7 +1092,23 @@ app.get(
         .find()
         .sort({ createdAt: -1 })
         .toArray();
-      return res.status(200).json(products);
+      return res.status(200).json(
+        products.map((p) => ({
+          id: p._id?.toString(),
+          title: p.title,
+          description: p.description,
+          category: p.category,
+          image: p.image,
+          price: p.price,
+          rating: p.rating,
+          stock: p.stock,
+          featured: p.featured,
+          sellerId: p.sellerId,
+          sellerName: p.sellerName,
+          sellerEmail: p.sellerEmail,
+          status: p.status,
+        })),
+      );
     } catch (error) {
       next(error);
     }
@@ -1250,9 +1199,7 @@ app.get(
 );
 
 app.use((req: Request, res: Response, next: NextFunction) => {
-  res
-    .status(404)
-    .json({ success: false, message: `Route not found: ${req.originalUrl}` });
+  res.status(404).json({ success: false, message: "Route not found" });
 });
 
 app.use((err: any, req: Request, res: Response, next: NextFunction) => {
@@ -1268,7 +1215,7 @@ async function startServer() {
     await seedDemoUsers();
     if (process.env.NODE_ENV !== "production") {
       app.listen(PORT, () => {
-        console.log(`Server listening on port ${PORT}`);
+        console.log("Server listening on port " + PORT);
       });
     }
   } catch (error) {

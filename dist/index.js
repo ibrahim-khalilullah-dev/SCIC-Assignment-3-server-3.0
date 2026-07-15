@@ -55,6 +55,7 @@ async function verifyToken(req, res, next) {
             id: user._id?.toString() || "",
             email: user.email,
             role: user.role,
+            verifiedReporter: user.verifiedReporter,
         };
         next();
     }
@@ -67,6 +68,14 @@ function verifyReporter(req, res, next) {
         return res
             .status(403)
             .json({ success: false, message: "Reporter privileges required" });
+    }
+    if (req.user?.role === "reporter" && !req.user?.verifiedReporter) {
+        return res
+            .status(403)
+            .json({
+            success: false,
+            message: "Verification required. Please complete your fee payment.",
+        });
     }
     next();
 }
@@ -192,6 +201,7 @@ app.post("/api/auth/signup", async (req, res, next) => {
                 username,
                 email,
                 role: "user",
+                verifiedReporter: false,
             },
         });
     }
@@ -231,6 +241,7 @@ app.post("/api/auth/login", async (req, res, next) => {
                 username: user.username,
                 email: user.email,
                 role: user.role,
+                verifiedReporter: user.verifiedReporter,
             },
         });
     }
@@ -253,6 +264,7 @@ app.get("/api/auth/me", verifyToken, async (req, res, next) => {
             name: user.username,
             email: user.email,
             role: user.role,
+            verifiedReporter: user.verifiedReporter,
         });
     }
     catch (error) {
@@ -296,7 +308,7 @@ app.post("/api/auth/google", async (req, res, next) => {
             return res
                 .status(400)
                 .json({ success: false, message: "Token missing" });
-        const googleRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${idToken}`);
+        const googleRes = await fetch("https://oauth2.googleapis.com/tokeninfo?id_token=" + idToken);
         if (!googleRes.ok)
             return res
                 .status(401)
@@ -340,6 +352,7 @@ app.post("/api/auth/google", async (req, res, next) => {
                 username: user.username,
                 email: user.email,
                 role: user.role,
+                verifiedReporter: user.verifiedReporter,
             },
         });
     }
@@ -418,7 +431,7 @@ app.get("/api/products/:id", async (req, res, next) => {
         next(error);
     }
 });
-app.post("/api/products", verifyToken, async (req, res, next) => {
+app.post("/api/products", verifyToken, verifyReporter, async (req, res, next) => {
     try {
         const db = (0, db_1.getDb)();
         const { title, description, category, image, price, rating, stock, featured, } = req.body;
@@ -449,7 +462,7 @@ app.post("/api/products", verifyToken, async (req, res, next) => {
         next(error);
     }
 });
-app.put("/api/products/:id", verifyToken, async (req, res, next) => {
+app.put("/api/products/:id", verifyToken, verifyReporter, async (req, res, next) => {
     try {
         const id = req.params.id;
         if (!mongodb_1.ObjectId.isValid(id))
@@ -477,7 +490,7 @@ app.put("/api/products/:id", verifyToken, async (req, res, next) => {
         next(error);
     }
 });
-app.delete("/api/products/:id", verifyToken, async (req, res, next) => {
+app.delete("/api/products/:id", verifyToken, verifyReporter, async (req, res, next) => {
     try {
         const id = req.params.id;
         if (!mongodb_1.ObjectId.isValid(id))
@@ -522,8 +535,10 @@ app.post("/api/create-checkout-session", verifyToken, async (req, res, next) => 
                 },
             ];
             metadata = { type: "publishing fee", buyerEmail: user.email };
-            successUrl = `${origin}/dashboard/reporter/success?session_id={CHECKOUT_SESSION_ID}`;
-            cancelUrl = `${origin}/dashboard/reporter`;
+            successUrl =
+                origin +
+                    "/dashboard/reporter/success?session_id={CHECKOUT_SESSION_ID}";
+            cancelUrl = origin + "/dashboard/reporter";
         }
         else if (type === "purchase" && productId) {
             const db = (0, db_1.getDb)();
@@ -538,7 +553,7 @@ app.post("/api/create-checkout-session", verifyToken, async (req, res, next) => 
                         currency: "usd",
                         product_data: {
                             name: product.title,
-                            description: `Goods from seller: ${product.sellerName}`,
+                            description: "Goods from seller: " + product.sellerName,
                         },
                         unit_amount: Math.round(product.price * 100),
                     },
@@ -552,8 +567,11 @@ app.post("/api/create-checkout-session", verifyToken, async (req, res, next) => 
                 sellerEmail: product.sellerEmail || "",
                 amount: product.price.toString(),
             };
-            successUrl = `${origin}/products/success?session_id={CHECKOUT_SESSION_ID}&product_id=${product._id?.toString()}`;
-            cancelUrl = `${origin}/products/${product._id?.toString()}`;
+            successUrl =
+                origin +
+                    "/products/success?session_id={CHECKOUT_SESSION_ID}&product_id=" +
+                    product._id?.toString();
+            cancelUrl = origin + "/products/" + product._id?.toString();
         }
         else {
             return res
@@ -719,7 +737,21 @@ app.get("/api/reporter/products", verifyToken, verifyReporter, async (req, res, 
             .collection("products")
             .find({ sellerId: req.user?.id })
             .toArray();
-        return res.status(200).json(products);
+        return res.status(200).json(products.map((p) => ({
+            id: p._id?.toString(),
+            title: p.title,
+            description: p.description,
+            category: p.category,
+            image: p.image,
+            price: p.price,
+            rating: p.rating,
+            stock: p.stock,
+            featured: p.featured,
+            sellerId: p.sellerId,
+            sellerName: p.sellerName,
+            sellerEmail: p.sellerEmail,
+            status: p.status,
+        })));
     }
     catch (error) {
         next(error);
@@ -769,7 +801,21 @@ app.get("/api/user/purchased-products", verifyToken, async (req, res, next) => {
             .collection("products")
             .find({ _id: { $in: productIds } })
             .toArray();
-        return res.status(200).json(products);
+        return res.status(200).json(products.map((p) => ({
+            id: p._id?.toString(),
+            title: p.title,
+            description: p.description,
+            category: p.category,
+            image: p.image,
+            price: p.price,
+            rating: p.rating,
+            stock: p.stock,
+            featured: p.featured,
+            sellerId: p.sellerId,
+            sellerName: p.sellerName,
+            sellerEmail: p.sellerEmail,
+            status: p.status,
+        })));
     }
     catch (error) {
         next(error);
@@ -779,7 +825,14 @@ app.get("/api/admin/users", verifyToken, verifyAdmin, async (req, res, next) => 
     try {
         const db = (0, db_1.getDb)();
         const users = await db.collection("users").find().toArray();
-        return res.status(200).json(users);
+        return res.status(200).json(users.map((u) => ({
+            id: u._id?.toString(),
+            name: u.username,
+            email: u.email,
+            role: u.role,
+            status: u.status,
+            verifiedReporter: u.verifiedReporter,
+        })));
     }
     catch (error) {
         next(error);
@@ -862,7 +915,21 @@ app.get("/api/admin/products", verifyToken, verifyAdmin, async (req, res, next) 
             .find()
             .sort({ createdAt: -1 })
             .toArray();
-        return res.status(200).json(products);
+        return res.status(200).json(products.map((p) => ({
+            id: p._id?.toString(),
+            title: p.title,
+            description: p.description,
+            category: p.category,
+            image: p.image,
+            price: p.price,
+            rating: p.rating,
+            stock: p.stock,
+            featured: p.featured,
+            sellerId: p.sellerId,
+            sellerName: p.sellerName,
+            sellerEmail: p.sellerEmail,
+            status: p.status,
+        })));
     }
     catch (error) {
         next(error);
@@ -930,9 +997,7 @@ app.get("/api/admin/analytics", verifyToken, verifyAdmin, async (req, res, next)
     }
 });
 app.use((req, res, next) => {
-    res
-        .status(404)
-        .json({ success: false, message: `Route not found: ${req.originalUrl}` });
+    res.status(404).json({ success: false, message: "Route not found" });
 });
 app.use((err, req, res, next) => {
     const statusCode = err.statusCode || err.status || 500;
@@ -946,7 +1011,7 @@ async function startServer() {
         await seedDemoUsers();
         if (process.env.NODE_ENV !== "production") {
             app.listen(PORT, () => {
-                console.log(`Server listening on port ${PORT}`);
+                console.log("Server listening on port " + PORT);
             });
         }
     }
