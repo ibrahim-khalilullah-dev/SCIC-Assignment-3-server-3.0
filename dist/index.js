@@ -34,66 +34,47 @@ app.use((0, cors_1.default)({
 }));
 app.use(express_1.default.json());
 app.use((0, cookie_parser_1.default)());
-function verifyToken(req, res, next) {
+async function verifyToken(req, res, next) {
     const token = req.cookies?.token;
-    if (!token) {
-        return res.status(401).json({
-            success: false,
-            message: "Unauthorized: No token provided",
-        });
-    }
+    if (!token)
+        return res.status(401).json({ success: false, message: "No token" });
     const secret = process.env.ACCESS_TOKEN_SECRET || "fallback_token_secret_string_pap_key";
-    jsonwebtoken_1.default.verify(token, secret, async (err, decoded) => {
-        if (err) {
-            return res.status(401).json({
-                success: false,
-                message: "Unauthorized: Invalid token",
-            });
-        }
-        try {
-            const db = (0, db_1.getDb)();
-            const user = await db
-                .collection("users")
-                .findOne({ _id: new mongodb_1.ObjectId(decoded.id) });
-            if (!user) {
-                return res.status(401).json({
-                    success: false,
-                    message: "Unauthorized: User not found",
-                });
-            }
-            if (user.status === "banned") {
-                return res.status(403).json({
-                    success: false,
-                    message: "Your account has been banned.",
-                });
-            }
-            req.user = {
-                id: user._id?.toString() || "",
-                email: user.email,
-                role: user.role,
-            };
-            next();
-        }
-        catch (error) {
-            next(error);
-        }
-    });
+    try {
+        const decoded = jsonwebtoken_1.default.verify(token, secret);
+        const db = (0, db_1.getDb)();
+        const user = await db
+            .collection("users")
+            .findOne({ _id: new mongodb_1.ObjectId(decoded.id) });
+        if (!user)
+            return res
+                .status(401)
+                .json({ success: false, message: "User not found" });
+        if (user.status === "banned")
+            return res.status(403).json({ success: false, message: "Banned" });
+        req.user = {
+            id: user._id?.toString() || "",
+            email: user.email,
+            role: user.role,
+        };
+        next();
+    }
+    catch {
+        return res.status(401).json({ success: false, message: "Invalid token" });
+    }
 }
 function verifyReporter(req, res, next) {
     if (req.user?.role !== "reporter" && req.user?.role !== "admin") {
-        return res.status(403).json({
-            success: false,
-            message: "Forbidden access. Reporter privileges required.",
-        });
+        return res
+            .status(403)
+            .json({ success: false, message: "Reporter privileges required" });
     }
     next();
 }
 function verifyAdmin(req, res, next) {
     if (req.user?.role !== "admin") {
-        return res.status(403).json({
-            success: false,
-            message: "Forbidden access. Administrator privileges required.",
-        });
+        return res
+            .status(403)
+            .json({ success: false, message: "Admin privileges required" });
     }
     next();
 }
@@ -106,33 +87,31 @@ async function seedDemoUsers() {
             .collection("users")
             .findOne({ email: adminEmail });
         if (!adminExists) {
-            const hashedAdminPassword = await (0, authHelper_1.hashPassword)("admin123");
+            const hash = await (0, authHelper_1.hashPassword)("admin123");
             await db.collection("users").insertOne({
                 username: "Admin Demo",
                 email: adminEmail,
-                password: hashedAdminPassword,
+                password: hash,
                 role: "admin",
                 verifiedReporter: true,
                 status: "active",
                 createdAt: new Date(),
             });
-            console.log("Demo Administrator account seeded successfully.");
         }
         const userExists = await db
             .collection("users")
             .findOne({ email: userEmail });
         if (!userExists) {
-            const hashedUserPassword = await (0, authHelper_1.hashPassword)("user123");
+            const hash = await (0, authHelper_1.hashPassword)("user123");
             await db.collection("users").insertOne({
                 username: "Customer Demo",
                 email: userEmail,
-                password: hashedUserPassword,
+                password: hash,
                 role: "user",
                 verifiedReporter: false,
                 status: "active",
                 createdAt: new Date(),
             });
-            console.log("Demo Customer account seeded successfully.");
         }
     }
     catch (error) {
@@ -145,33 +124,26 @@ app.get("/", (req, res) => {
 app.post("/api/auth/signup", async (req, res, next) => {
     try {
         const { username, email, password } = req.body;
-        if (!username || !email || !password) {
-            return res.status(400).json({
-                success: false,
-                message: "All fields are required",
-            });
-        }
+        if (!username || !email || !password)
+            return res
+                .status(400)
+                .json({ success: false, message: "Required fields missing" });
         const db = (0, db_1.getDb)();
         const existingUser = await db
             .collection("users")
             .findOne({ email });
-        if (existingUser) {
-            return res.status(400).json({
-                success: false,
-                message: "User already exists with this email",
-            });
-        }
-        const hashedPassword = await (0, authHelper_1.hashPassword)(password);
-        const newUser = {
+        if (existingUser)
+            return res.status(400).json({ success: false, message: "User exists" });
+        const hash = await (0, authHelper_1.hashPassword)(password);
+        const result = await db.collection("users").insertOne({
             username,
             email,
-            password: hashedPassword,
+            password: hash,
             role: "user",
             verifiedReporter: false,
             status: "active",
             createdAt: new Date(),
-        };
-        const result = await db.collection("users").insertOne(newUser);
+        });
         const secret = process.env.ACCESS_TOKEN_SECRET ||
             "fallback_token_secret_string_pap_key";
         const token = jsonwebtoken_1.default.sign({ id: result.insertedId.toString(), email, role: "user" }, secret, { expiresIn: "1d" });
@@ -183,7 +155,6 @@ app.post("/api/auth/signup", async (req, res, next) => {
         });
         return res.status(201).json({
             success: true,
-            message: "User registered successfully",
             user: {
                 id: result.insertedId.toString(),
                 username,
@@ -199,26 +170,18 @@ app.post("/api/auth/signup", async (req, res, next) => {
 app.post("/api/auth/login", async (req, res, next) => {
     try {
         const { email, password } = req.body;
-        if (!email || !password) {
-            return res.status(400).json({
-                success: false,
-                message: "Email and password are required",
-            });
-        }
+        if (!email || !password)
+            return res
+                .status(400)
+                .json({ success: false, message: "Credentials missing" });
         const db = (0, db_1.getDb)();
         const user = await db.collection("users").findOne({ email });
-        if (!user || !user.password) {
-            return res.status(401).json({
-                success: false,
-                message: "Invalid email or password",
-            });
-        }
-        const isPasswordMatch = await (0, authHelper_1.comparePassword)(password, user.password);
-        if (!isPasswordMatch) {
-            return res.status(401).json({
-                success: false,
-                message: "Invalid email or password",
-            });
+        if (!user ||
+            !user.password ||
+            !(await (0, authHelper_1.comparePassword)(password, user.password))) {
+            return res
+                .status(401)
+                .json({ success: false, message: "Invalid credentials" });
         }
         const secret = process.env.ACCESS_TOKEN_SECRET ||
             "fallback_token_secret_string_pap_key";
@@ -231,7 +194,6 @@ app.post("/api/auth/login", async (req, res, next) => {
         });
         return res.status(200).json({
             success: true,
-            message: "Logged in successfully",
             user: {
                 id: user._id?.toString(),
                 username: user.username,
@@ -247,23 +209,14 @@ app.post("/api/auth/login", async (req, res, next) => {
 app.get("/api/auth/me", verifyToken, async (req, res, next) => {
     try {
         const db = (0, db_1.getDb)();
-        const userId = req.user?.id;
-        if (!userId) {
-            return res.status(401).json({
-                success: false,
-                message: "Unauthorized",
-            });
-        }
         const user = await db
             .collection("users")
-            .findOne({ _id: new mongodb_1.ObjectId(userId) });
-        if (!user) {
-            return res.status(404).json({
-                success: false,
-                message: "User not found",
-            });
-        }
-        return res.status(200).json({
+            .findOne({ _id: new mongodb_1.ObjectId(req.user?.id) });
+        if (!user)
+            return res.status(404).json({ success: false, message: "Not found" });
+        return res
+            .status(200)
+            .json({
             id: user._id?.toString(),
             name: user.username,
             email: user.email,
@@ -281,46 +234,35 @@ app.post("/api/auth/logout", (req, res) => {
         sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
         path: "/",
     });
-    return res.status(200).json({
-        success: true,
-        message: "Logged out successfully",
-    });
+    return res.status(200).json({ success: true, message: "Logged out" });
 });
 app.post("/api/auth/google", async (req, res, next) => {
     try {
         const { idToken } = req.body;
-        if (!idToken) {
-            return res.status(400).json({
-                success: false,
-                message: "Google ID Token is required",
-            });
-        }
-        const googleResponse = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${idToken}`);
-        if (!googleResponse.ok) {
-            return res.status(401).json({
-                success: false,
-                message: "Invalid Google token",
-            });
-        }
-        const payload = (await googleResponse.json());
-        const googleClientId = process.env.GOOGLE_CLIENT_ID;
-        if (googleClientId && payload.aud !== googleClientId) {
-            return res.status(401).json({
-                success: false,
-                message: "Client ID verification failed",
-            });
-        }
+        if (!idToken)
+            return res
+                .status(400)
+                .json({ success: false, message: "Token missing" });
+        const googleRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${idToken}`);
+        if (!googleRes.ok)
+            return res
+                .status(401)
+                .json({ success: false, message: "Invalid Google token" });
+        const payload = (await googleRes.json());
         const { email, name } = payload;
-        if (!email) {
-            return res.status(400).json({
-                success: false,
-                message: "Email not retrieved from Google profile",
-            });
-        }
         const db = (0, db_1.getDb)();
         let user = await db.collection("users").findOne({ email });
         if (!user) {
-            const newUser = {
+            const result = await db.collection("users").insertOne({
+                username: name || email.split("@")[0],
+                email,
+                role: "user",
+                verifiedReporter: false,
+                status: "active",
+                createdAt: new Date(),
+            });
+            user = {
+                _id: result.insertedId,
                 username: name || email.split("@")[0],
                 email,
                 role: "user",
@@ -328,8 +270,6 @@ app.post("/api/auth/google", async (req, res, next) => {
                 status: "active",
                 createdAt: new Date(),
             };
-            const result = await db.collection("users").insertOne(newUser);
-            user = { _id: result.insertedId, ...newUser };
         }
         const secret = process.env.ACCESS_TOKEN_SECRET ||
             "fallback_token_secret_string_pap_key";
@@ -342,7 +282,6 @@ app.post("/api/auth/google", async (req, res, next) => {
         });
         return res.status(200).json({
             success: true,
-            message: "Google login successful",
             user: {
                 id: user._id?.toString(),
                 username: user.username,
@@ -360,12 +299,10 @@ app.get("/api/products", async (req, res, next) => {
         const { search, category, minPrice, maxPrice } = req.query;
         const db = (0, db_1.getDb)();
         const query = {};
-        if (search) {
+        if (search)
             query.title = { $regex: search, $options: "i" };
-        }
-        if (category) {
+        if (category)
             query.category = category;
-        }
         if (minPrice || maxPrice) {
             query.price = {};
             if (minPrice)
@@ -377,22 +314,21 @@ app.get("/api/products", async (req, res, next) => {
             .collection("products")
             .find(query)
             .toArray();
-        const formattedProducts = products.map((product) => ({
-            id: product._id?.toString(),
-            title: product.title,
-            description: product.description,
-            category: product.category,
-            image: product.image,
-            price: product.price,
-            rating: product.rating,
-            stock: product.stock,
-            featured: product.featured,
-            sellerId: product.sellerId,
-            sellerName: product.sellerName,
-            sellerEmail: product.sellerEmail,
-            status: product.status,
-        }));
-        return res.status(200).json(formattedProducts);
+        return res.status(200).json(products.map((p) => ({
+            id: p._id?.toString(),
+            title: p.title,
+            description: p.description,
+            category: p.category,
+            image: p.image,
+            price: p.price,
+            rating: p.rating,
+            stock: p.stock,
+            featured: p.featured,
+            sellerId: p.sellerId,
+            sellerName: p.sellerName,
+            sellerEmail: p.sellerEmail,
+            status: p.status,
+        })));
     }
     catch (error) {
         next(error);
@@ -401,36 +337,28 @@ app.get("/api/products", async (req, res, next) => {
 app.get("/api/products/:id", async (req, res, next) => {
     try {
         const id = req.params.id;
+        if (!mongodb_1.ObjectId.isValid(id))
+            return res.status(400).json({ success: false, message: "Invalid ID" });
         const db = (0, db_1.getDb)();
-        if (!mongodb_1.ObjectId.isValid(id)) {
-            return res.status(400).json({
-                success: false,
-                message: "Invalid product identifier",
-            });
-        }
-        const product = await db
+        const p = await db
             .collection("products")
             .findOne({ _id: new mongodb_1.ObjectId(id) });
-        if (!product) {
-            return res.status(404).json({
-                success: false,
-                message: "Product not found",
-            });
-        }
+        if (!p)
+            return res.status(404).json({ success: false, message: "Not found" });
         return res.status(200).json({
-            id: product._id?.toString(),
-            title: product.title,
-            description: product.description,
-            category: product.category,
-            image: product.image,
-            price: product.price,
-            rating: product.rating,
-            stock: product.stock,
-            featured: product.featured,
-            sellerId: product.sellerId,
-            sellerName: product.sellerName,
-            sellerEmail: product.sellerEmail,
-            status: product.status,
+            id: p._id?.toString(),
+            title: p.title,
+            description: p.description,
+            category: p.category,
+            image: p.image,
+            price: p.price,
+            rating: p.rating,
+            stock: p.stock,
+            featured: p.featured,
+            sellerId: p.sellerId,
+            sellerName: p.sellerName,
+            sellerEmail: p.sellerEmail,
+            status: p.status,
         });
     }
     catch (error) {
@@ -441,13 +369,11 @@ app.post("/api/products", verifyToken, async (req, res, next) => {
     try {
         const db = (0, db_1.getDb)();
         const { title, description, category, image, price, rating, stock, featured, } = req.body;
-        if (!title || !category || !price || !image) {
-            return res.status(400).json({
-                success: false,
-                message: "Title, category, price, and image are required",
-            });
-        }
-        const newProduct = {
+        if (!title || !category || !price || !image)
+            return res
+                .status(400)
+                .json({ success: false, message: "Required fields missing" });
+        const result = await db.collection("products").insertOne({
             title,
             description: description || "",
             category,
@@ -461,15 +387,10 @@ app.post("/api/products", verifyToken, async (req, res, next) => {
             sellerEmail: req.user?.email || "",
             status: "Available",
             createdAt: new Date(),
-        };
-        const result = await db
-            .collection("products")
-            .insertOne(newProduct);
-        return res.status(201).json({
-            success: true,
-            message: "Product created successfully",
-            id: result.insertedId.toString(),
         });
+        return res
+            .status(201)
+            .json({ success: true, id: result.insertedId.toString() });
     }
     catch (error) {
         next(error);
@@ -478,13 +399,9 @@ app.post("/api/products", verifyToken, async (req, res, next) => {
 app.put("/api/products/:id", verifyToken, async (req, res, next) => {
     try {
         const id = req.params.id;
+        if (!mongodb_1.ObjectId.isValid(id))
+            return res.status(400).json({ success: false, message: "Invalid ID" });
         const db = (0, db_1.getDb)();
-        if (!mongodb_1.ObjectId.isValid(id)) {
-            return res.status(400).json({
-                success: false,
-                message: "Invalid product identifier",
-            });
-        }
         const updates = { ...req.body };
         delete updates._id;
         delete updates.id;
@@ -499,16 +416,9 @@ app.put("/api/products/:id", verifyToken, async (req, res, next) => {
         const result = await db
             .collection("products")
             .updateOne({ _id: new mongodb_1.ObjectId(id) }, { $set: updates });
-        if (result.matchedCount === 0) {
-            return res.status(404).json({
-                success: false,
-                message: "Product not found",
-            });
-        }
-        return res.status(200).json({
-            success: true,
-            message: "Product updated successfully",
-        });
+        if (result.matchedCount === 0)
+            return res.status(404).json({ success: false, message: "Not found" });
+        return res.status(200).json({ success: true });
     }
     catch (error) {
         next(error);
@@ -517,26 +427,15 @@ app.put("/api/products/:id", verifyToken, async (req, res, next) => {
 app.delete("/api/products/:id", verifyToken, async (req, res, next) => {
     try {
         const id = req.params.id;
+        if (!mongodb_1.ObjectId.isValid(id))
+            return res.status(400).json({ success: false, message: "Invalid ID" });
         const db = (0, db_1.getDb)();
-        if (!mongodb_1.ObjectId.isValid(id)) {
-            return res.status(400).json({
-                success: false,
-                message: "Invalid product identifier",
-            });
-        }
-        const result = await db.collection("products").deleteOne({
-            _id: new mongodb_1.ObjectId(id),
-        });
-        if (result.deletedCount === 0) {
-            return res.status(404).json({
-                success: false,
-                message: "Product not found",
-            });
-        }
-        return res.status(200).json({
-            success: true,
-            message: "Product deleted successfully",
-        });
+        const result = await db
+            .collection("products")
+            .deleteOne({ _id: new mongodb_1.ObjectId(id) });
+        if (result.deletedCount === 0)
+            return res.status(404).json({ success: false, message: "Not found" });
+        return res.status(200).json({ success: true });
     }
     catch (error) {
         next(error);
@@ -546,12 +445,10 @@ app.post("/api/create-checkout-session", verifyToken, async (req, res, next) => 
     try {
         const { type, productId, price } = req.body;
         const user = req.user;
-        if (!user) {
-            return res.status(401).json({
-                success: false,
-                message: "Unauthorized access",
-            });
-        }
+        if (!user)
+            return res
+                .status(401)
+                .json({ success: false, message: "Unauthorized" });
         const origin = req.headers.origin || "http://localhost:3000";
         let lineItems = [];
         let metadata = {};
@@ -563,18 +460,15 @@ app.post("/api/create-checkout-session", verifyToken, async (req, res, next) => 
                     price_data: {
                         currency: "usd",
                         product_data: {
-                            name: "Vendor Lifetime Verification Fee",
-                            description: "One-time security license to activate product publication desk",
+                            name: "Vendor Activation",
+                            description: "One-time vendor workspace registration fee",
                         },
                         unit_amount: Math.round(parseFloat(price) * 100),
                     },
                     quantity: 1,
                 },
             ];
-            metadata = {
-                type: "publishing fee",
-                buyerEmail: user.email,
-            };
+            metadata = { type: "publishing fee", buyerEmail: user.email };
             successUrl = `${origin}/dashboard/reporter/success?session_id={CHECKOUT_SESSION_ID}`;
             cancelUrl = `${origin}/dashboard/reporter`;
         }
@@ -583,19 +477,15 @@ app.post("/api/create-checkout-session", verifyToken, async (req, res, next) => 
             const product = await db
                 .collection("products")
                 .findOne({ _id: new mongodb_1.ObjectId(productId) });
-            if (!product) {
-                return res.status(404).json({
-                    success: false,
-                    message: "Target product not found",
-                });
-            }
+            if (!product)
+                return res.status(404).json({ success: false, message: "Not found" });
             lineItems = [
                 {
                     price_data: {
                         currency: "usd",
                         product_data: {
                             name: product.title,
-                            description: `Standard goods delivered by verified vendor: ${product.sellerName}`,
+                            description: `Goods from seller: ${product.sellerName}`,
                         },
                         unit_amount: Math.round(product.price * 100),
                     },
@@ -613,10 +503,9 @@ app.post("/api/create-checkout-session", verifyToken, async (req, res, next) => 
             cancelUrl = `${origin}/products/${product._id?.toString()}`;
         }
         else {
-            return res.status(400).json({
-                success: false,
-                message: "Invalid session checkout parameters",
-            });
+            return res
+                .status(400)
+                .json({ success: false, message: "Invalid parameters" });
         }
         const session = await stripe.checkout.sessions.create({
             customer_email: user.email,
@@ -626,10 +515,7 @@ app.post("/api/create-checkout-session", verifyToken, async (req, res, next) => 
             success_url: successUrl,
             cancel_url: cancelUrl,
         });
-        return res.status(200).json({
-            id: session.id,
-            url: session.url,
-        });
+        return res.status(200).json({ id: session.id, url: session.url });
     }
     catch (error) {
         next(error);
@@ -638,30 +524,25 @@ app.post("/api/create-checkout-session", verifyToken, async (req, res, next) => 
 app.get("/api/verify-payment", verifyToken, async (req, res, next) => {
     try {
         const { session_id } = req.query;
-        if (!session_id || typeof session_id !== "string") {
-            return res.status(400).json({
-                success: false,
-                message: "Stripe payment session identifier required",
-            });
-        }
+        if (!session_id || typeof session_id !== "string")
+            return res
+                .status(400)
+                .json({ success: false, message: "Session ID required" });
         const db = (0, db_1.getDb)();
         const session = await stripe.checkout.sessions.retrieve(session_id);
-        if (session.payment_status !== "paid") {
-            return res.status(400).json({
-                success: false,
-                message: "Target checkout payment not finalized",
-            });
-        }
+        if (session.payment_status !== "paid")
+            return res.status(400).json({ success: false, message: "Unpaid" });
         const existingTx = await db
             .collection("transactions")
             .findOne({ transactionId: session_id });
-        if (existingTx) {
-            return res.status(200).json({
+        if (existingTx)
+            return res
+                .status(200)
+                .json({
                 success: true,
                 alreadyProcessed: true,
                 transaction: existingTx,
             });
-        }
         const metadata = (session.metadata || {});
         const type = metadata.type;
         const buyerEmail = metadata.buyerEmail;
@@ -695,10 +576,7 @@ app.get("/api/verify-payment", verifyToken, async (req, res, next) => {
                     .updateOne({ _id: new mongodb_1.ObjectId(productId) }, { $set: { stock: newStock, status: newStatus } });
             }
         }
-        return res.status(200).json({
-            success: true,
-            transaction: txRecord,
-        });
+        return res.status(200).json({ success: true, transaction: txRecord });
     }
     catch (error) {
         next(error);
@@ -708,38 +586,24 @@ app.post("/api/bookmarks", verifyToken, async (req, res, next) => {
     try {
         const { productId } = req.body;
         const userId = req.user?.id;
-        if (!productId) {
-            return res.status(400).json({
-                success: false,
-                message: "Product identifier required",
-            });
-        }
-        if (!userId) {
-            return res.status(401).json({
-                success: false,
-                message: "Unauthorized",
-            });
-        }
+        if (!productId || !userId)
+            return res
+                .status(400)
+                .json({ success: false, message: "Parameters missing" });
         const db = (0, db_1.getDb)();
         const existingBookmark = await db
             .collection("bookmarks")
             .findOne({ userId, productId });
-        if (existingBookmark) {
-            return res.status(400).json({
-                success: false,
-                message: "Product is already wishlisted",
-            });
-        }
+        if (existingBookmark)
+            return res
+                .status(400)
+                .json({ success: false, message: "Already saved" });
         const product = await db
             .collection("products")
             .findOne({ _id: new mongodb_1.ObjectId(productId) });
-        if (!product) {
-            return res.status(404).json({
-                success: false,
-                message: "Catalog product not found",
-            });
-        }
-        const bookmark = {
+        if (!product)
+            return res.status(404).json({ success: false, message: "Not found" });
+        const result = await db.collection("bookmarks").insertOne({
             userId,
             productId,
             productTitle: product.title,
@@ -748,14 +612,10 @@ app.post("/api/bookmarks", verifyToken, async (req, res, next) => {
             productCategory: product.category,
             productSeller: product.sellerName,
             createdAt: new Date(),
-        };
-        const result = await db
-            .collection("bookmarks")
-            .insertOne(bookmark);
-        return res.status(201).json({
-            success: true,
-            id: result.insertedId.toString(),
         });
+        return res
+            .status(201)
+            .json({ success: true, id: result.insertedId.toString() });
     }
     catch (error) {
         next(error);
@@ -764,12 +624,10 @@ app.post("/api/bookmarks", verifyToken, async (req, res, next) => {
 app.get("/api/bookmarks", verifyToken, async (req, res, next) => {
     try {
         const userId = req.user?.id;
-        if (!userId) {
-            return res.status(401).json({
-                success: false,
-                message: "Unauthorized",
-            });
-        }
+        if (!userId)
+            return res
+                .status(401)
+                .json({ success: false, message: "Unauthorized" });
         const db = (0, db_1.getDb)();
         const bookmarks = await db
             .collection("bookmarks")
@@ -785,20 +643,17 @@ app.delete("/api/bookmarks/:productId", verifyToken, async (req, res, next) => {
     try {
         const productId = req.params.productId;
         const userId = req.user?.id;
-        if (!userId) {
-            return res.status(401).json({
-                success: false,
-                message: "Unauthorized",
-            });
-        }
+        if (!userId)
+            return res
+                .status(401)
+                .json({ success: false, message: "Unauthorized" });
         const db = (0, db_1.getDb)();
         const result = await db
             .collection("bookmarks")
             .deleteOne({ userId, productId });
-        return res.status(200).json({
-            success: true,
-            deletedCount: result.deletedCount,
-        });
+        return res
+            .status(200)
+            .json({ success: true, deletedCount: result.deletedCount });
     }
     catch (error) {
         next(error);
@@ -855,9 +710,8 @@ app.get("/api/user/purchased-products", verifyToken, async (req, res, next) => {
         const productIds = purchases
             .filter((p) => p.productId)
             .map((p) => new mongodb_1.ObjectId(p.productId.toString()));
-        if (productIds.length === 0) {
+        if (productIds.length === 0)
             return res.status(200).json([]);
-        }
         const products = await db
             .collection("products")
             .find({ _id: { $in: productIds } })
@@ -882,20 +736,15 @@ app.patch("/api/admin/users/:id/role", verifyToken, verifyAdmin, async (req, res
     try {
         const id = req.params.id;
         const { role } = req.body;
-        if (!mongodb_1.ObjectId.isValid(id)) {
-            return res.status(400).json({
-                success: false,
-                message: "Invalid account identifier",
-            });
-        }
+        if (!mongodb_1.ObjectId.isValid(id))
+            return res.status(400).json({ success: false, message: "Invalid ID" });
         const db = (0, db_1.getDb)();
         const result = await db
             .collection("users")
             .updateOne({ _id: new mongodb_1.ObjectId(id) }, { $set: { role } });
-        return res.status(200).json({
-            success: true,
-            matchedCount: result.matchedCount,
-        });
+        return res
+            .status(200)
+            .json({ success: true, matchedCount: result.matchedCount });
     }
     catch (error) {
         next(error);
@@ -904,20 +753,15 @@ app.patch("/api/admin/users/:id/role", verifyToken, verifyAdmin, async (req, res
 app.patch("/api/admin/users/:id/ban", verifyToken, verifyAdmin, async (req, res, next) => {
     try {
         const id = req.params.id;
-        if (!mongodb_1.ObjectId.isValid(id)) {
-            return res.status(400).json({
-                success: false,
-                message: "Invalid account identifier",
-            });
-        }
+        if (!mongodb_1.ObjectId.isValid(id))
+            return res.status(400).json({ success: false, message: "Invalid ID" });
         const db = (0, db_1.getDb)();
         const result = await db
             .collection("users")
             .updateOne({ _id: new mongodb_1.ObjectId(id) }, { $set: { status: "banned" } });
-        return res.status(200).json({
-            success: true,
-            matchedCount: result.matchedCount,
-        });
+        return res
+            .status(200)
+            .json({ success: true, matchedCount: result.matchedCount });
     }
     catch (error) {
         next(error);
@@ -926,20 +770,15 @@ app.patch("/api/admin/users/:id/ban", verifyToken, verifyAdmin, async (req, res,
 app.patch("/api/admin/users/:id/unban", verifyToken, verifyAdmin, async (req, res, next) => {
     try {
         const id = req.params.id;
-        if (!mongodb_1.ObjectId.isValid(id)) {
-            return res.status(400).json({
-                success: false,
-                message: "Invalid account identifier",
-            });
-        }
+        if (!mongodb_1.ObjectId.isValid(id))
+            return res.status(400).json({ success: false, message: "Invalid ID" });
         const db = (0, db_1.getDb)();
         const result = await db
             .collection("users")
             .updateOne({ _id: new mongodb_1.ObjectId(id) }, { $set: { status: "active" } });
-        return res.status(200).json({
-            success: true,
-            matchedCount: result.matchedCount,
-        });
+        return res
+            .status(200)
+            .json({ success: true, matchedCount: result.matchedCount });
     }
     catch (error) {
         next(error);
@@ -948,20 +787,15 @@ app.patch("/api/admin/users/:id/unban", verifyToken, verifyAdmin, async (req, re
 app.delete("/api/admin/users/:id", verifyToken, verifyAdmin, async (req, res, next) => {
     try {
         const id = req.params.id;
-        if (!mongodb_1.ObjectId.isValid(id)) {
-            return res.status(400).json({
-                success: false,
-                message: "Invalid account identifier",
-            });
-        }
+        if (!mongodb_1.ObjectId.isValid(id))
+            return res.status(400).json({ success: false, message: "Invalid ID" });
         const db = (0, db_1.getDb)();
         const result = await db
             .collection("users")
             .deleteOne({ _id: new mongodb_1.ObjectId(id) });
-        return res.status(200).json({
-            success: true,
-            deletedCount: result.deletedCount,
-        });
+        return res
+            .status(200)
+            .json({ success: true, deletedCount: result.deletedCount });
     }
     catch (error) {
         next(error);
@@ -1043,17 +877,15 @@ app.get("/api/admin/analytics", verifyToken, verifyAdmin, async (req, res, next)
     }
 });
 app.use((req, res, next) => {
-    res.status(404).json({
-        success: false,
-        message: `Route not found: ${req.originalUrl}`,
-    });
+    res
+        .status(404)
+        .json({ success: false, message: `Route not found: ${req.originalUrl}` });
 });
 app.use((err, req, res, next) => {
     const statusCode = err.statusCode || err.status || 500;
-    res.status(statusCode).json({
-        success: false,
-        message: err.message || "Internal Server Error",
-    });
+    res
+        .status(statusCode)
+        .json({ success: false, message: err.message || "Internal Server Error" });
 });
 async function startServer() {
     try {

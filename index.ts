@@ -46,60 +46,40 @@ interface AuthenticatedRequest extends Request {
   };
 }
 
-function verifyToken(
+async function verifyToken(
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction,
-): any {
+): Promise<any> {
   const token = req.cookies?.token;
-
-  if (!token) {
-    return res.status(401).json({
-      success: false,
-      message: "Unauthorized: No token provided",
-    });
-  }
+  if (!token)
+    return res.status(401).json({ success: false, message: "No token" });
 
   const secret =
     process.env.ACCESS_TOKEN_SECRET || "fallback_token_secret_string_pap_key";
-  jwt.verify(token, secret, async (err: any, decoded: any) => {
-    if (err) {
-      return res.status(401).json({
-        success: false,
-        message: "Unauthorized: Invalid token",
-      });
-    }
+  try {
+    const decoded = jwt.verify(token, secret) as any;
+    const db = getDb();
+    const user = await db
+      .collection<TUser>("users")
+      .findOne({ _id: new ObjectId(decoded.id) });
 
-    try {
-      const db = getDb();
-      const user = await db
-        .collection<TUser>("users")
-        .findOne({ _id: new ObjectId(decoded.id) });
+    if (!user)
+      return res
+        .status(401)
+        .json({ success: false, message: "User not found" });
+    if (user.status === "banned")
+      return res.status(403).json({ success: false, message: "Banned" });
 
-      if (!user) {
-        return res.status(401).json({
-          success: false,
-          message: "Unauthorized: User not found",
-        });
-      }
-
-      if (user.status === "banned") {
-        return res.status(403).json({
-          success: false,
-          message: "Your account has been banned.",
-        });
-      }
-
-      req.user = {
-        id: user._id?.toString() || "",
-        email: user.email,
-        role: user.role,
-      };
-      next();
-    } catch (error) {
-      next(error);
-    }
-  });
+    req.user = {
+      id: user._id?.toString() || "",
+      email: user.email,
+      role: user.role,
+    };
+    next();
+  } catch {
+    return res.status(401).json({ success: false, message: "Invalid token" });
+  }
 }
 
 function verifyReporter(
@@ -108,10 +88,9 @@ function verifyReporter(
   next: NextFunction,
 ): any {
   if (req.user?.role !== "reporter" && req.user?.role !== "admin") {
-    return res.status(403).json({
-      success: false,
-      message: "Forbidden access. Reporter privileges required.",
-    });
+    return res
+      .status(403)
+      .json({ success: false, message: "Reporter privileges required" });
   }
   next();
 }
@@ -122,10 +101,9 @@ function verifyAdmin(
   next: NextFunction,
 ): any {
   if (req.user?.role !== "admin") {
-    return res.status(403).json({
-      success: false,
-      message: "Forbidden access. Administrator privileges required.",
-    });
+    return res
+      .status(403)
+      .json({ success: false, message: "Admin privileges required" });
   }
   next();
 }
@@ -133,7 +111,6 @@ function verifyAdmin(
 async function seedDemoUsers() {
   try {
     const db = getDb();
-
     const adminEmail = "admin@nextmart.com";
     const userEmail = "user@nextmart.com";
 
@@ -141,34 +118,32 @@ async function seedDemoUsers() {
       .collection<TUser>("users")
       .findOne({ email: adminEmail });
     if (!adminExists) {
-      const hashedAdminPassword = await hashPassword("admin123");
+      const hash = await hashPassword("admin123");
       await db.collection<TUser>("users").insertOne({
         username: "Admin Demo",
         email: adminEmail,
-        password: hashedAdminPassword,
+        password: hash,
         role: "admin",
         verifiedReporter: true,
         status: "active",
         createdAt: new Date(),
       });
-      console.log("Demo Administrator account seeded successfully.");
     }
 
     const userExists = await db
       .collection<TUser>("users")
       .findOne({ email: userEmail });
     if (!userExists) {
-      const hashedUserPassword = await hashPassword("user123");
+      const hash = await hashPassword("user123");
       await db.collection<TUser>("users").insertOne({
         username: "Customer Demo",
         email: userEmail,
-        password: hashedUserPassword,
+        password: hash,
         role: "user",
         verifiedReporter: false,
         status: "active",
         createdAt: new Date(),
       });
-      console.log("Demo Customer account seeded successfully.");
     }
   } catch (error) {
     console.error("Failed to seed demo users:", error);
@@ -184,39 +159,28 @@ app.post(
   async (req: Request, res: Response, next: NextFunction): Promise<any> => {
     try {
       const { username, email, password } = req.body;
-
-      if (!username || !email || !password) {
-        return res.status(400).json({
-          success: false,
-          message: "All fields are required",
-        });
-      }
+      if (!username || !email || !password)
+        return res
+          .status(400)
+          .json({ success: false, message: "Required fields missing" });
 
       const db = getDb();
       const existingUser = await db
         .collection<TUser>("users")
         .findOne({ email });
+      if (existingUser)
+        return res.status(400).json({ success: false, message: "User exists" });
 
-      if (existingUser) {
-        return res.status(400).json({
-          success: false,
-          message: "User already exists with this email",
-        });
-      }
-
-      const hashedPassword = await hashPassword(password);
-
-      const newUser: TUser = {
+      const hash = await hashPassword(password);
+      const result = await db.collection<TUser>("users").insertOne({
         username,
         email,
-        password: hashedPassword,
+        password: hash,
         role: "user",
         verifiedReporter: false,
         status: "active",
         createdAt: new Date(),
-      };
-
-      const result = await db.collection<TUser>("users").insertOne(newUser);
+      });
 
       const secret =
         process.env.ACCESS_TOKEN_SECRET ||
@@ -236,7 +200,6 @@ app.post(
 
       return res.status(201).json({
         success: true,
-        message: "User registered successfully",
         user: {
           id: result.insertedId.toString(),
           username,
@@ -255,31 +218,21 @@ app.post(
   async (req: Request, res: Response, next: NextFunction): Promise<any> => {
     try {
       const { email, password } = req.body;
-
-      if (!email || !password) {
-        return res.status(400).json({
-          success: false,
-          message: "Email and password are required",
-        });
-      }
+      if (!email || !password)
+        return res
+          .status(400)
+          .json({ success: false, message: "Credentials missing" });
 
       const db = getDb();
       const user = await db.collection<TUser>("users").findOne({ email });
-
-      if (!user || !user.password) {
-        return res.status(401).json({
-          success: false,
-          message: "Invalid email or password",
-        });
-      }
-
-      const isPasswordMatch = await comparePassword(password, user.password);
-
-      if (!isPasswordMatch) {
-        return res.status(401).json({
-          success: false,
-          message: "Invalid email or password",
-        });
+      if (
+        !user ||
+        !user.password ||
+        !(await comparePassword(password, user.password))
+      ) {
+        return res
+          .status(401)
+          .json({ success: false, message: "Invalid credentials" });
       }
 
       const secret =
@@ -300,7 +253,6 @@ app.post(
 
       return res.status(200).json({
         success: true,
-        message: "Logged in successfully",
         user: {
           id: user._id?.toString(),
           username: user.username,
@@ -324,49 +276,34 @@ app.get(
   ): Promise<any> => {
     try {
       const db = getDb();
-      const userId = req.user?.id;
-
-      if (!userId) {
-        return res.status(401).json({
-          success: false,
-          message: "Unauthorized",
-        });
-      }
-
       const user = await db
         .collection<TUser>("users")
-        .findOne({ _id: new ObjectId(userId) });
+        .findOne({ _id: new ObjectId(req.user?.id) });
+      if (!user)
+        return res.status(404).json({ success: false, message: "Not found" });
 
-      if (!user) {
-        return res.status(404).json({
-          success: false,
-          message: "User not found",
+      return res
+        .status(200)
+        .json({
+          id: user._id?.toString(),
+          name: user.username,
+          email: user.email,
+          role: user.role,
         });
-      }
-
-      return res.status(200).json({
-        id: user._id?.toString(),
-        name: user.username,
-        email: user.email,
-        role: user.role,
-      });
     } catch (error) {
       next(error);
     }
   },
 );
 
-app.post("/api/auth/logout", (req: Request, res: Response): any => {
+app.post("/api/auth/logout", (req: Request, res: Response) => {
   res.clearCookie("token", {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
     path: "/",
   });
-  return res.status(200).json({
-    success: true,
-    message: "Logged out successfully",
-  });
+  return res.status(200).json({ success: true, message: "Logged out" });
 });
 
 app.post(
@@ -374,48 +311,36 @@ app.post(
   async (req: Request, res: Response, next: NextFunction): Promise<any> => {
     try {
       const { idToken } = req.body;
+      if (!idToken)
+        return res
+          .status(400)
+          .json({ success: false, message: "Token missing" });
 
-      if (!idToken) {
-        return res.status(400).json({
-          success: false,
-          message: "Google ID Token is required",
-        });
-      }
-
-      const googleResponse = await fetch(
+      const googleRes = await fetch(
         `https://oauth2.googleapis.com/tokeninfo?id_token=${idToken}`,
       );
+      if (!googleRes.ok)
+        return res
+          .status(401)
+          .json({ success: false, message: "Invalid Google token" });
 
-      if (!googleResponse.ok) {
-        return res.status(401).json({
-          success: false,
-          message: "Invalid Google token",
-        });
-      }
-
-      const payload = (await googleResponse.json()) as any;
-
-      const googleClientId = process.env.GOOGLE_CLIENT_ID;
-      if (googleClientId && payload.aud !== googleClientId) {
-        return res.status(401).json({
-          success: false,
-          message: "Client ID verification failed",
-        });
-      }
-
+      const payload = (await googleRes.json()) as any;
       const { email, name } = payload;
-      if (!email) {
-        return res.status(400).json({
-          success: false,
-          message: "Email not retrieved from Google profile",
-        });
-      }
 
       const db = getDb();
       let user = await db.collection<TUser>("users").findOne({ email });
 
       if (!user) {
-        const newUser: TUser = {
+        const result = await db.collection<TUser>("users").insertOne({
+          username: name || email.split("@")[0],
+          email,
+          role: "user",
+          verifiedReporter: false,
+          status: "active",
+          createdAt: new Date(),
+        });
+        user = {
+          _id: result.insertedId,
           username: name || email.split("@")[0],
           email,
           role: "user",
@@ -423,8 +348,6 @@ app.post(
           status: "active",
           createdAt: new Date(),
         };
-        const result = await db.collection<TUser>("users").insertOne(newUser);
-        user = { _id: result.insertedId, ...newUser };
       }
 
       const secret =
@@ -445,7 +368,6 @@ app.post(
 
       return res.status(200).json({
         success: true,
-        message: "Google login successful",
         user: {
           id: user._id?.toString(),
           username: user.username,
@@ -467,14 +389,8 @@ app.get(
       const db = getDb();
       const query: any = {};
 
-      if (search) {
-        query.title = { $regex: search as string, $options: "i" };
-      }
-
-      if (category) {
-        query.category = category as string;
-      }
-
+      if (search) query.title = { $regex: search as string, $options: "i" };
+      if (category) query.category = category as string;
       if (minPrice || maxPrice) {
         query.price = {};
         if (minPrice) query.price.$gte = Number(minPrice);
@@ -485,24 +401,23 @@ app.get(
         .collection<TProduct>("products")
         .find(query)
         .toArray();
-
-      const formattedProducts = products.map((product) => ({
-        id: product._id?.toString(),
-        title: product.title,
-        description: product.description,
-        category: product.category,
-        image: product.image,
-        price: product.price,
-        rating: product.rating,
-        stock: product.stock,
-        featured: product.featured,
-        sellerId: product.sellerId,
-        sellerName: product.sellerName,
-        sellerEmail: product.sellerEmail,
-        status: product.status,
-      }));
-
-      return res.status(200).json(formattedProducts);
+      return res.status(200).json(
+        products.map((p) => ({
+          id: p._id?.toString(),
+          title: p.title,
+          description: p.description,
+          category: p.category,
+          image: p.image,
+          price: p.price,
+          rating: p.rating,
+          stock: p.stock,
+          featured: p.featured,
+          sellerId: p.sellerId,
+          sellerName: p.sellerName,
+          sellerEmail: p.sellerEmail,
+          status: p.status,
+        })),
+      );
     } catch (error) {
       next(error);
     }
@@ -514,40 +429,30 @@ app.get(
   async (req: Request, res: Response, next: NextFunction): Promise<any> => {
     try {
       const id = req.params.id as string;
+      if (!ObjectId.isValid(id))
+        return res.status(400).json({ success: false, message: "Invalid ID" });
+
       const db = getDb();
-
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid product identifier",
-        });
-      }
-
-      const product = await db
+      const p = await db
         .collection<TProduct>("products")
         .findOne({ _id: new ObjectId(id) });
-
-      if (!product) {
-        return res.status(404).json({
-          success: false,
-          message: "Product not found",
-        });
-      }
+      if (!p)
+        return res.status(404).json({ success: false, message: "Not found" });
 
       return res.status(200).json({
-        id: product._id?.toString(),
-        title: product.title,
-        description: product.description,
-        category: product.category,
-        image: product.image,
-        price: product.price,
-        rating: product.rating,
-        stock: product.stock,
-        featured: product.featured,
-        sellerId: product.sellerId,
-        sellerName: product.sellerName,
-        sellerEmail: product.sellerEmail,
-        status: product.status,
+        id: p._id?.toString(),
+        title: p.title,
+        description: p.description,
+        category: p.category,
+        image: p.image,
+        price: p.price,
+        rating: p.rating,
+        stock: p.stock,
+        featured: p.featured,
+        sellerId: p.sellerId,
+        sellerName: p.sellerName,
+        sellerEmail: p.sellerEmail,
+        status: p.status,
       });
     } catch (error) {
       next(error);
@@ -575,15 +480,12 @@ app.post(
         stock,
         featured,
       } = req.body;
+      if (!title || !category || !price || !image)
+        return res
+          .status(400)
+          .json({ success: false, message: "Required fields missing" });
 
-      if (!title || !category || !price || !image) {
-        return res.status(400).json({
-          success: false,
-          message: "Title, category, price, and image are required",
-        });
-      }
-
-      const newProduct: TProduct = {
+      const result = await db.collection<TProduct>("products").insertOne({
         title,
         description: description || "",
         category,
@@ -597,17 +499,11 @@ app.post(
         sellerEmail: req.user?.email || "",
         status: "Available",
         createdAt: new Date(),
-      };
-
-      const result = await db
-        .collection<TProduct>("products")
-        .insertOne(newProduct);
-
-      return res.status(201).json({
-        success: true,
-        message: "Product created successfully",
-        id: result.insertedId.toString(),
       });
+
+      return res
+        .status(201)
+        .json({ success: true, id: result.insertedId.toString() });
     } catch (error) {
       next(error);
     }
@@ -624,15 +520,10 @@ app.put(
   ): Promise<any> => {
     try {
       const id = req.params.id as string;
+      if (!ObjectId.isValid(id))
+        return res.status(400).json({ success: false, message: "Invalid ID" });
+
       const db = getDb();
-
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid product identifier",
-        });
-      }
-
       const updates = { ...req.body };
       delete updates._id;
       delete updates.id;
@@ -646,18 +537,10 @@ app.put(
       const result = await db
         .collection<TProduct>("products")
         .updateOne({ _id: new ObjectId(id) }, { $set: updates });
+      if (result.matchedCount === 0)
+        return res.status(404).json({ success: false, message: "Not found" });
 
-      if (result.matchedCount === 0) {
-        return res.status(404).json({
-          success: false,
-          message: "Product not found",
-        });
-      }
-
-      return res.status(200).json({
-        success: true,
-        message: "Product updated successfully",
-      });
+      return res.status(200).json({ success: true });
     } catch (error) {
       next(error);
     }
@@ -674,30 +557,17 @@ app.delete(
   ): Promise<any> => {
     try {
       const id = req.params.id as string;
+      if (!ObjectId.isValid(id))
+        return res.status(400).json({ success: false, message: "Invalid ID" });
+
       const db = getDb();
+      const result = await db
+        .collection<TProduct>("products")
+        .deleteOne({ _id: new ObjectId(id) });
+      if (result.deletedCount === 0)
+        return res.status(404).json({ success: false, message: "Not found" });
 
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid product identifier",
-        });
-      }
-
-      const result = await db.collection<TProduct>("products").deleteOne({
-        _id: new ObjectId(id),
-      });
-
-      if (result.deletedCount === 0) {
-        return res.status(404).json({
-          success: false,
-          message: "Product not found",
-        });
-      }
-
-      return res.status(200).json({
-        success: true,
-        message: "Product deleted successfully",
-      });
+      return res.status(200).json({ success: true });
     } catch (error) {
       next(error);
     }
@@ -715,13 +585,10 @@ app.post(
     try {
       const { type, productId, price } = req.body;
       const user = req.user;
-
-      if (!user) {
-        return res.status(401).json({
-          success: false,
-          message: "Unauthorized access",
-        });
-      }
+      if (!user)
+        return res
+          .status(401)
+          .json({ success: false, message: "Unauthorized" });
 
       const origin = req.headers.origin || "http://localhost:3000";
       let lineItems: any[] = [];
@@ -735,21 +602,15 @@ app.post(
             price_data: {
               currency: "usd",
               product_data: {
-                name: "Vendor Lifetime Verification Fee",
-                description:
-                  "One-time security license to activate product publication desk",
+                name: "Vendor Activation",
+                description: "One-time vendor workspace registration fee",
               },
               unit_amount: Math.round(parseFloat(price) * 100),
             },
             quantity: 1,
           },
         ];
-
-        metadata = {
-          type: "publishing fee",
-          buyerEmail: user.email,
-        };
-
+        metadata = { type: "publishing fee", buyerEmail: user.email };
         successUrl = `${origin}/dashboard/reporter/success?session_id={CHECKOUT_SESSION_ID}`;
         cancelUrl = `${origin}/dashboard/reporter`;
       } else if (type === "purchase" && productId) {
@@ -757,13 +618,8 @@ app.post(
         const product = await db
           .collection<TProduct>("products")
           .findOne({ _id: new ObjectId(productId) });
-
-        if (!product) {
-          return res.status(404).json({
-            success: false,
-            message: "Target product not found",
-          });
-        }
+        if (!product)
+          return res.status(404).json({ success: false, message: "Not found" });
 
         lineItems = [
           {
@@ -771,7 +627,7 @@ app.post(
               currency: "usd",
               product_data: {
                 name: product.title,
-                description: `Standard goods delivered by verified vendor: ${product.sellerName}`,
+                description: `Goods from seller: ${product.sellerName}`,
               },
               unit_amount: Math.round(product.price * 100),
             },
@@ -786,14 +642,12 @@ app.post(
           sellerEmail: product.sellerEmail || "",
           amount: product.price.toString(),
         };
-
         successUrl = `${origin}/products/success?session_id={CHECKOUT_SESSION_ID}&product_id=${product._id?.toString()}`;
         cancelUrl = `${origin}/products/${product._id?.toString()}`;
       } else {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid session checkout parameters",
-        });
+        return res
+          .status(400)
+          .json({ success: false, message: "Invalid parameters" });
       }
 
       const session = await stripe.checkout.sessions.create({
@@ -805,10 +659,7 @@ app.post(
         cancel_url: cancelUrl,
       });
 
-      return res.status(200).json({
-        id: session.id,
-        url: session.url,
-      });
+      return res.status(200).json({ id: session.id, url: session.url });
     } catch (error) {
       next(error);
     }
@@ -825,35 +676,27 @@ app.get(
   ): Promise<any> => {
     try {
       const { session_id } = req.query;
-
-      if (!session_id || typeof session_id !== "string") {
-        return res.status(400).json({
-          success: false,
-          message: "Stripe payment session identifier required",
-        });
-      }
+      if (!session_id || typeof session_id !== "string")
+        return res
+          .status(400)
+          .json({ success: false, message: "Session ID required" });
 
       const db = getDb();
       const session = await stripe.checkout.sessions.retrieve(session_id);
-
-      if (session.payment_status !== "paid") {
-        return res.status(400).json({
-          success: false,
-          message: "Target checkout payment not finalized",
-        });
-      }
+      if (session.payment_status !== "paid")
+        return res.status(400).json({ success: false, message: "Unpaid" });
 
       const existingTx = await db
         .collection("transactions")
         .findOne({ transactionId: session_id });
-
-      if (existingTx) {
-        return res.status(200).json({
-          success: true,
-          alreadyProcessed: true,
-          transaction: existingTx,
-        });
-      }
+      if (existingTx)
+        return res
+          .status(200)
+          .json({
+            success: true,
+            alreadyProcessed: true,
+            transaction: existingTx,
+          });
 
       const metadata = (session.metadata || {}) as any;
       const type = metadata.type;
@@ -885,11 +728,9 @@ app.get(
         const product = await db
           .collection<TProduct>("products")
           .findOne({ _id: new ObjectId(productId) });
-
         if (product) {
           const newStock = Math.max(0, product.stock - 1);
           const newStatus = newStock === 0 ? "Sold" : "Available";
-
           await db
             .collection<TProduct>("products")
             .updateOne(
@@ -899,10 +740,7 @@ app.get(
         }
       }
 
-      return res.status(200).json({
-        success: true,
-        transaction: txRecord,
-      });
+      return res.status(200).json({ success: true, transaction: txRecord });
     } catch (error) {
       next(error);
     }
@@ -920,45 +758,27 @@ app.post(
     try {
       const { productId } = req.body;
       const userId = req.user?.id;
-
-      if (!productId) {
-        return res.status(400).json({
-          success: false,
-          message: "Product identifier required",
-        });
-      }
-
-      if (!userId) {
-        return res.status(401).json({
-          success: false,
-          message: "Unauthorized",
-        });
-      }
+      if (!productId || !userId)
+        return res
+          .status(400)
+          .json({ success: false, message: "Parameters missing" });
 
       const db = getDb();
       const existingBookmark = await db
         .collection<TBookmark>("bookmarks")
         .findOne({ userId, productId });
-
-      if (existingBookmark) {
-        return res.status(400).json({
-          success: false,
-          message: "Product is already wishlisted",
-        });
-      }
+      if (existingBookmark)
+        return res
+          .status(400)
+          .json({ success: false, message: "Already saved" });
 
       const product = await db
         .collection<TProduct>("products")
         .findOne({ _id: new ObjectId(productId) });
+      if (!product)
+        return res.status(404).json({ success: false, message: "Not found" });
 
-      if (!product) {
-        return res.status(404).json({
-          success: false,
-          message: "Catalog product not found",
-        });
-      }
-
-      const bookmark: TBookmark = {
+      const result = await db.collection<TBookmark>("bookmarks").insertOne({
         userId,
         productId,
         productTitle: product.title,
@@ -967,16 +787,11 @@ app.post(
         productCategory: product.category,
         productSeller: product.sellerName,
         createdAt: new Date(),
-      };
-
-      const result = await db
-        .collection<TBookmark>("bookmarks")
-        .insertOne(bookmark);
-
-      return res.status(201).json({
-        success: true,
-        id: result.insertedId.toString(),
       });
+
+      return res
+        .status(201)
+        .json({ success: true, id: result.insertedId.toString() });
     } catch (error) {
       next(error);
     }
@@ -993,20 +808,16 @@ app.get(
   ): Promise<any> => {
     try {
       const userId = req.user?.id;
-
-      if (!userId) {
-        return res.status(401).json({
-          success: false,
-          message: "Unauthorized",
-        });
-      }
+      if (!userId)
+        return res
+          .status(401)
+          .json({ success: false, message: "Unauthorized" });
 
       const db = getDb();
       const bookmarks = await db
         .collection<TBookmark>("bookmarks")
         .find({ userId })
         .toArray();
-
       return res.status(200).json(bookmarks);
     } catch (error) {
       next(error);
@@ -1025,23 +836,18 @@ app.delete(
     try {
       const productId = req.params.productId as string;
       const userId = req.user?.id;
-
-      if (!userId) {
-        return res.status(401).json({
-          success: false,
-          message: "Unauthorized",
-        });
-      }
+      if (!userId)
+        return res
+          .status(401)
+          .json({ success: false, message: "Unauthorized" });
 
       const db = getDb();
       const result = await db
         .collection<TBookmark>("bookmarks")
         .deleteOne({ userId, productId });
-
-      return res.status(200).json({
-        success: true,
-        deletedCount: result.deletedCount,
-      });
+      return res
+        .status(200)
+        .json({ success: true, deletedCount: result.deletedCount });
     } catch (error) {
       next(error);
     }
@@ -1063,7 +869,6 @@ app.get(
         .collection<TProduct>("products")
         .find({ sellerId: req.user?.id })
         .toArray();
-
       return res.status(200).json(products);
     } catch (error) {
       next(error);
@@ -1087,7 +892,6 @@ app.get(
         .find({ sellerEmail: req.user?.email, type: "purchase" })
         .sort({ createdAt: -1 })
         .toArray();
-
       return res.status(200).json(sales);
     } catch (error) {
       next(error);
@@ -1110,7 +914,6 @@ app.get(
         .find({ buyerEmail: req.user?.email, type: "purchase" })
         .sort({ createdAt: -1 })
         .toArray();
-
       return res.status(200).json(purchases);
     } catch (error) {
       next(error);
@@ -1132,20 +935,16 @@ app.get(
         .collection("transactions")
         .find({ buyerEmail: req.user?.email, type: "purchase" })
         .toArray();
-
       const productIds = purchases
         .filter((p: any) => p.productId)
         .map((p: any) => new ObjectId(p.productId.toString()));
 
-      if (productIds.length === 0) {
-        return res.status(200).json([]);
-      }
+      if (productIds.length === 0) return res.status(200).json([]);
 
       const products = await db
         .collection<TProduct>("products")
         .find({ _id: { $in: productIds } })
         .toArray();
-
       return res.status(200).json(products);
     } catch (error) {
       next(error);
@@ -1165,7 +964,6 @@ app.get(
     try {
       const db = getDb();
       const users = await db.collection<TUser>("users").find().toArray();
-
       return res.status(200).json(users);
     } catch (error) {
       next(error);
@@ -1185,23 +983,16 @@ app.patch(
     try {
       const id = req.params.id as string;
       const { role } = req.body;
-
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid account identifier",
-        });
-      }
+      if (!ObjectId.isValid(id))
+        return res.status(400).json({ success: false, message: "Invalid ID" });
 
       const db = getDb();
       const result = await db
         .collection<TUser>("users")
         .updateOne({ _id: new ObjectId(id) }, { $set: { role } });
-
-      return res.status(200).json({
-        success: true,
-        matchedCount: result.matchedCount,
-      });
+      return res
+        .status(200)
+        .json({ success: true, matchedCount: result.matchedCount });
     } catch (error) {
       next(error);
     }
@@ -1219,23 +1010,16 @@ app.patch(
   ): Promise<any> => {
     try {
       const id = req.params.id as string;
-
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid account identifier",
-        });
-      }
+      if (!ObjectId.isValid(id))
+        return res.status(400).json({ success: false, message: "Invalid ID" });
 
       const db = getDb();
       const result = await db
         .collection<TUser>("users")
         .updateOne({ _id: new ObjectId(id) }, { $set: { status: "banned" } });
-
-      return res.status(200).json({
-        success: true,
-        matchedCount: result.matchedCount,
-      });
+      return res
+        .status(200)
+        .json({ success: true, matchedCount: result.matchedCount });
     } catch (error) {
       next(error);
     }
@@ -1253,23 +1037,16 @@ app.patch(
   ): Promise<any> => {
     try {
       const id = req.params.id as string;
-
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid account identifier",
-        });
-      }
+      if (!ObjectId.isValid(id))
+        return res.status(400).json({ success: false, message: "Invalid ID" });
 
       const db = getDb();
       const result = await db
         .collection<TUser>("users")
         .updateOne({ _id: new ObjectId(id) }, { $set: { status: "active" } });
-
-      return res.status(200).json({
-        success: true,
-        matchedCount: result.matchedCount,
-      });
+      return res
+        .status(200)
+        .json({ success: true, matchedCount: result.matchedCount });
     } catch (error) {
       next(error);
     }
@@ -1287,23 +1064,16 @@ app.delete(
   ): Promise<any> => {
     try {
       const id = req.params.id as string;
-
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid account identifier",
-        });
-      }
+      if (!ObjectId.isValid(id))
+        return res.status(400).json({ success: false, message: "Invalid ID" });
 
       const db = getDb();
       const result = await db
         .collection<TUser>("users")
         .deleteOne({ _id: new ObjectId(id) });
-
-      return res.status(200).json({
-        success: true,
-        deletedCount: result.deletedCount,
-      });
+      return res
+        .status(200)
+        .json({ success: true, deletedCount: result.deletedCount });
     } catch (error) {
       next(error);
     }
@@ -1326,7 +1096,6 @@ app.get(
         .find()
         .sort({ createdAt: -1 })
         .toArray();
-
       return res.status(200).json(products);
     } catch (error) {
       next(error);
@@ -1350,7 +1119,6 @@ app.get(
         .find()
         .sort({ createdAt: -1 })
         .toArray();
-
       return res.status(200).json(transactions);
     } catch (error) {
       next(error);
@@ -1369,7 +1137,6 @@ app.get(
   ): Promise<any> => {
     try {
       const db = getDb();
-
       const totalUsers = await db.collection("users").countDocuments();
       const totalWriters = await db
         .collection("users")
@@ -1420,25 +1187,22 @@ app.get(
 );
 
 app.use((req: Request, res: Response, next: NextFunction) => {
-  res.status(404).json({
-    success: false,
-    message: `Route not found: ${req.originalUrl}`,
-  });
+  res
+    .status(404)
+    .json({ success: false, message: `Route not found: ${req.originalUrl}` });
 });
 
 app.use((err: any, req: Request, res: Response, next: NextFunction) => {
   const statusCode = err.statusCode || err.status || 500;
-  res.status(statusCode).json({
-    success: false,
-    message: err.message || "Internal Server Error",
-  });
+  res
+    .status(statusCode)
+    .json({ success: false, message: err.message || "Internal Server Error" });
 });
 
 async function startServer() {
   try {
     await connectDB();
     await seedDemoUsers();
-
     if (process.env.NODE_ENV !== "production") {
       app.listen(PORT, () => {
         console.log(`Server listening on port ${PORT}`);
