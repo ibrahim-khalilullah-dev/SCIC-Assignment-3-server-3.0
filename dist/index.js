@@ -63,7 +63,7 @@ async function verifyToken(req, res, next) {
         const userId = session.userId;
         const userQuery = mongodb_1.ObjectId.isValid(userId)
             ? { _id: new mongodb_1.ObjectId(userId) }
-            : { id: userId };
+            : { _id: userId };
         const user = await db.collection("user").findOne(userQuery);
         if (!user) {
             return res
@@ -78,8 +78,8 @@ async function verifyToken(req, res, next) {
         req.user = {
             id: user._id?.toString() || user.id || "",
             email: user.email,
-            role: user.role,
-            verifiedWriter: user.verifiedWriter,
+            role: user.role || user.userRole || "user",
+            verifiedWriter: user.verifiedWriter || user.verifiedWriter || false,
         };
         next();
     }
@@ -400,7 +400,7 @@ app.patch("/api/users/profile", verifyToken, async (req, res, next) => {
         const userId = req.user?.id;
         const query = mongodb_1.ObjectId.isValid(userId || "")
             ? { _id: new mongodb_1.ObjectId(userId) }
-            : { id: userId };
+            : { _id: userId };
         await db.collection("user").updateOne(query, {
             $set: { name, image },
         });
@@ -560,7 +560,7 @@ app.get("/api/admin/users", verifyToken, verifyAdmin, async (req, res, next) => 
             id: u._id?.toString() || u.id || "",
             name: u.username || u.name || "",
             email: u.email,
-            role: u.role,
+            role: u.role || u.userRole || "user",
             status: u.status,
             verifiedReporter: u.verifiedWriter,
         })));
@@ -573,11 +573,13 @@ app.patch("/api/admin/users/:id/role", verifyToken, verifyAdmin, async (req, res
     try {
         const id = req.params.id;
         const { role } = req.body;
-        const query = mongodb_1.ObjectId.isValid(id) ? { _id: new mongodb_1.ObjectId(id) } : { id };
+        const query = mongodb_1.ObjectId.isValid(id)
+            ? { _id: new mongodb_1.ObjectId(id) }
+            : { _id: id };
         const db = (0, db_1.getDb)();
         const result = await db
             .collection("user")
-            .updateOne(query, { $set: { role } });
+            .updateOne(query, { $set: { role, userRole: role } });
         return res
             .status(200)
             .json({ success: true, matchedCount: result.matchedCount });
@@ -589,7 +591,9 @@ app.patch("/api/admin/users/:id/role", verifyToken, verifyAdmin, async (req, res
 app.patch("/api/admin/users/:id/ban", verifyToken, verifyAdmin, async (req, res, next) => {
     try {
         const id = req.params.id;
-        const query = mongodb_1.ObjectId.isValid(id) ? { _id: new mongodb_1.ObjectId(id) } : { id };
+        const query = mongodb_1.ObjectId.isValid(id)
+            ? { _id: new mongodb_1.ObjectId(id) }
+            : { _id: id };
         const db = (0, db_1.getDb)();
         const result = await db
             .collection("user")
@@ -605,7 +609,9 @@ app.patch("/api/admin/users/:id/ban", verifyToken, verifyAdmin, async (req, res,
 app.patch("/api/admin/users/:id/unban", verifyToken, verifyAdmin, async (req, res, next) => {
     try {
         const id = req.params.id;
-        const query = mongodb_1.ObjectId.isValid(id) ? { _id: new mongodb_1.ObjectId(id) } : { id };
+        const query = mongodb_1.ObjectId.isValid(id)
+            ? { _id: new mongodb_1.ObjectId(id) }
+            : { _id: id };
         const db = (0, db_1.getDb)();
         const result = await db
             .collection("user")
@@ -621,7 +627,9 @@ app.patch("/api/admin/users/:id/unban", verifyToken, verifyAdmin, async (req, re
 app.delete("/api/admin/users/:id", verifyToken, verifyAdmin, async (req, res, next) => {
     try {
         const id = req.params.id;
-        const query = mongodb_1.ObjectId.isValid(id) ? { _id: new mongodb_1.ObjectId(id) } : { id };
+        const query = mongodb_1.ObjectId.isValid(id)
+            ? { _id: new mongodb_1.ObjectId(id) }
+            : { _id: id };
         const db = (0, db_1.getDb)();
         const result = await db.collection("user").deleteOne(query);
         return res
