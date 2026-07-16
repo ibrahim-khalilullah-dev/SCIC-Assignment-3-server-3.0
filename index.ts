@@ -2,12 +2,10 @@ import dotenv from "dotenv";
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
-import jwt from "jsonwebtoken";
 import { ObjectId } from "mongodb";
 import Stripe from "stripe";
 import { connectDB, getDb } from "./db";
-import { hashPassword, comparePassword } from "./utils/authHelper";
-import { TUser, TProduct, TBookmark } from "./types";
+import { TUser, TProduct } from "./types";
 
 dotenv.config();
 
@@ -38,12 +36,21 @@ app.use(
 app.use(express.json());
 app.use(cookieParser());
 
+app.use(async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    await connectDB();
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
+
 interface AuthenticatedRequest extends Request {
   user?: {
     id: string;
     email: string;
     role: string;
-    verifiedReporter?: boolean;
+    verifiedWriter?: boolean;
   };
 }
 
@@ -52,35 +59,59 @@ async function verifyToken(
   res: Response,
   next: NextFunction,
 ): Promise<any> {
-  const token = req.cookies?.token;
-  if (!token)
-    return res.status(401).json({ success: false, message: "No token" });
+  const authHeader = req.headers?.authorization;
+  let token = authHeader?.split(" ")[1];
 
-  const secret =
-    process.env.ACCESS_TOKEN_SECRET || "fallback_token_secret_string_pap_key";
+  if (!token) {
+    token =
+      req.cookies?.["better-auth.session_token"] ||
+      req.cookies?.["__Secure-better-auth.session_token"];
+  }
+
+  if (!token) {
+    return res
+      .status(401)
+      .json({ success: false, message: "Unauthorized access" });
+  }
+
   try {
-    const decoded = jwt.verify(token, secret) as any;
     const db = getDb();
-    const user = await db
-      .collection<TUser>("users")
-      .findOne({ _id: new ObjectId(decoded.id) });
-
-    if (!user)
+    const session = await db.collection("session").findOne({ token: token });
+    if (!session) {
       return res
         .status(401)
-        .json({ success: false, message: "User not found" });
-    if (user.status === "banned")
-      return res.status(403).json({ success: false, message: "Banned" });
+        .json({ success: false, message: "Unauthorized access" });
+    }
+
+    const userId = session.userId;
+    const userQuery = ObjectId.isValid(userId)
+      ? { _id: new ObjectId(userId) }
+      : { id: userId };
+    const user = await db.collection<TUser>("user").findOne(userQuery as any);
+
+    if (!user) {
+      return res
+        .status(401)
+        .json({ success: false, message: "Unauthorized access" });
+    }
+
+    if (user.status === "banned") {
+      return res
+        .status(403)
+        .json({ success: false, message: "Your account has been banned." });
+    }
 
     req.user = {
-      id: user._id?.toString() || "",
+      id: user._id?.toString() || (user as any).id || "",
       email: user.email,
       role: user.role,
-      verifiedReporter: user.verifiedReporter,
+      verifiedWriter: user.verifiedWriter,
     };
     next();
   } catch {
-    return res.status(401).json({ success: false, message: "Invalid token" });
+    return res
+      .status(401)
+      .json({ success: false, message: "Unauthorized access" });
   }
 }
 
@@ -94,13 +125,11 @@ function verifyReporter(
       .status(403)
       .json({ success: false, message: "Reporter privileges required" });
   }
-  if (req.user?.role === "reporter" && !req.user?.verifiedReporter) {
-    return res
-      .status(403)
-      .json({
-        success: false,
-        message: "Verification required. Please complete your fee payment.",
-      });
+  if (req.user?.role === "reporter" && !req.user?.verifiedWriter) {
+    return res.status(403).json({
+      success: false,
+      message: "Verification required. Please complete your fee payment.",
+    });
   }
   next();
 }
@@ -138,266 +167,6 @@ app.get("/", (req: Request, res: Response) => {
   res.send("Server is up and running!");
 });
 
-app.post(
-  "/api/auth/signup",
-  async (req: Request, res: Response, next: NextFunction): Promise<any> => {
-    try {
-      const { username, email, password } = req.body;
-      if (!username || !email || !password)
-        return res
-          .status(400)
-          .json({ success: false, message: "Required fields missing" });
-
-      const db = getDb();
-      const existingUser = await db
-        .collection<TUser>("users")
-        .findOne({ email });
-      if (existingUser)
-        return res.status(400).json({ success: false, message: "User exists" });
-
-      const hash = await hashPassword(password);
-      const result = await db.collection<TUser>("users").insertOne({
-        username,
-        email,
-        password: hash,
-        role: "user",
-        verifiedReporter: false,
-        status: "active",
-        createdAt: new Date(),
-      });
-
-      const secret =
-        process.env.ACCESS_TOKEN_SECRET ||
-        "fallback_token_secret_string_pap_key";
-      const token = jwt.sign(
-        { id: result.insertedId.toString(), email, role: "user" },
-        secret,
-        { expiresIn: "1d" },
-      );
-
-      res.cookie("token", token, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-        maxAge: 24 * 60 * 60 * 1000,
-      });
-
-      return res.status(201).json({
-        success: true,
-        user: {
-          id: result.insertedId.toString(),
-          username,
-          email,
-          role: "user",
-          verifiedReporter: false,
-        },
-      });
-    } catch (error) {
-      next(error);
-    }
-  },
-);
-
-app.post(
-  "/api/auth/login",
-  async (req: Request, res: Response, next: NextFunction): Promise<any> => {
-    try {
-      const { email, password } = req.body;
-      if (!email || !password)
-        return res
-          .status(400)
-          .json({ success: false, message: "Credentials missing" });
-
-      const db = getDb();
-      const user = await db.collection<TUser>("users").findOne({ email });
-      if (
-        !user ||
-        !user.password ||
-        !(await comparePassword(password, user.password))
-      ) {
-        return res
-          .status(401)
-          .json({ success: false, message: "Invalid credentials" });
-      }
-
-      const secret =
-        process.env.ACCESS_TOKEN_SECRET ||
-        "fallback_token_secret_string_pap_key";
-      const token = jwt.sign(
-        { id: user._id?.toString(), email: user.email, role: user.role },
-        secret,
-        { expiresIn: "1d" },
-      );
-
-      res.cookie("token", token, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-        maxAge: 24 * 60 * 60 * 1000,
-      });
-
-      return res.status(200).json({
-        success: true,
-        user: {
-          id: user._id?.toString(),
-          username: user.username,
-          email: user.email,
-          role: user.role,
-          verifiedReporter: user.verifiedReporter,
-        },
-      });
-    } catch (error) {
-      next(error);
-    }
-  },
-);
-
-app.get(
-  "/api/auth/me",
-  verifyToken,
-  async (
-    req: AuthenticatedRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<any> => {
-    try {
-      const db = getDb();
-      const user = await db
-        .collection<TUser>("users")
-        .findOne({ _id: new ObjectId(req.user?.id) });
-      if (!user)
-        return res.status(404).json({ success: false, message: "Not found" });
-
-      return res
-        .status(200)
-        .json({
-          id: user._id?.toString(),
-          name: user.username,
-          email: user.email,
-          role: user.role,
-          verifiedReporter: user.verifiedReporter,
-        });
-    } catch (error) {
-      next(error);
-    }
-  },
-);
-
-app.patch(
-  "/api/users/profile",
-  verifyToken,
-  async (
-    req: AuthenticatedRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<any> => {
-    try {
-      const { name, image } = req.body;
-      const db = getDb();
-      const updateDoc: any = {};
-      if (name) updateDoc.username = name;
-      if (image) updateDoc.image = image;
-
-      const result = await db
-        .collection<TUser>("users")
-        .updateOne({ _id: new ObjectId(req.user?.id) }, { $set: updateDoc });
-
-      return res.status(200).json({
-        success: true,
-        matchedCount: result.matchedCount,
-      });
-    } catch (error) {
-      next(error);
-    }
-  },
-);
-
-app.post("/api/auth/logout", (req: Request, res: Response) => {
-  res.clearCookie("token", {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-    path: "/",
-  });
-  return res.status(200).json({ success: true, message: "Logged out" });
-});
-
-app.post(
-  "/api/auth/google",
-  async (req: Request, res: Response, next: NextFunction): Promise<any> => {
-    try {
-      const { idToken } = req.body;
-      if (!idToken)
-        return res
-          .status(400)
-          .json({ success: false, message: "Token missing" });
-
-      const googleRes = await fetch(
-        "https://oauth2.googleapis.com/tokeninfo?id_token=" + idToken,
-      );
-      if (!googleRes.ok)
-        return res
-          .status(401)
-          .json({ success: false, message: "Invalid Google token" });
-
-      const payload = (await googleRes.json()) as any;
-      const { email, name } = payload;
-
-      const db = getDb();
-      let user = await db.collection<TUser>("users").findOne({ email });
-
-      if (!user) {
-        const result = await db.collection<TUser>("users").insertOne({
-          username: name || email.split("@")[0],
-          email,
-          role: "user",
-          verifiedReporter: false,
-          status: "active",
-          createdAt: new Date(),
-        });
-        user = {
-          _id: result.insertedId,
-          username: name || email.split("@")[0],
-          email,
-          role: "user",
-          verifiedReporter: false,
-          status: "active",
-          createdAt: new Date(),
-        };
-      }
-
-      const secret =
-        process.env.ACCESS_TOKEN_SECRET ||
-        "fallback_token_secret_string_pap_key";
-      const token = jwt.sign(
-        { id: user._id?.toString(), email: user.email, role: user.role },
-        secret,
-        { expiresIn: "1d" },
-      );
-
-      res.cookie("token", token, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-        maxAge: 24 * 60 * 60 * 1000,
-      });
-
-      return res.status(200).json({
-        success: true,
-        user: {
-          id: user._id?.toString(),
-          username: user.username,
-          email: user.email,
-          role: user.role,
-          verifiedReporter: user.verifiedReporter,
-        },
-      });
-    } catch (error) {
-      next(error);
-    }
-  },
-);
-
 app.get(
   "/api/products",
   async (req: Request, res: Response, next: NextFunction): Promise<any> => {
@@ -433,7 +202,8 @@ app.get(
       if (!ObjectId.isValid(id))
         return res.status(400).json({ success: false });
 
-      const p = await getDb()
+      const db = getDb();
+      const p = await db
         .collection<TProduct>("products")
         .findOne({ _id: new ObjectId(id) });
       return p
@@ -677,13 +447,11 @@ app.get(
         .collection("transactions")
         .findOne({ transactionId: session_id });
       if (existingTx)
-        return res
-          .status(200)
-          .json({
-            success: true,
-            alreadyProcessed: true,
-            transaction: existingTx,
-          });
+        return res.status(200).json({
+          success: true,
+          alreadyProcessed: true,
+          transaction: existingTx,
+        });
 
       const metadata = (session.metadata || {}) as any;
       const type = metadata.type;
@@ -706,11 +474,8 @@ app.get(
 
       if (type === "publishing fee") {
         await db
-          .collection<TUser>("users")
-          .updateOne(
-            { email: buyerEmail },
-            { $set: { verifiedReporter: true, role: "reporter" } },
-          );
+          .collection("user")
+          .updateOne({ email: buyerEmail }, { $set: { verifiedWriter: true } });
       } else if (type === "purchase" && productId) {
         const product = await db
           .collection<TProduct>("products")
@@ -728,6 +493,41 @@ app.get(
       }
 
       return res.status(200).json({ success: true, transaction: txRecord });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+app.patch(
+  "/api/users/profile",
+  verifyToken,
+  async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<any> => {
+    try {
+      const { name, image } = req.body;
+      if (!name) {
+        return res
+          .status(400)
+          .json({ success: false, message: "Name is required" });
+      }
+
+      const db = getDb();
+      const userId = req.user?.id;
+      const query = ObjectId.isValid(userId || "")
+        ? { _id: new ObjectId(userId) }
+        : { id: userId };
+
+      await db.collection("user").updateOne(query as any, {
+        $set: { name, image },
+      });
+
+      return res
+        .status(200)
+        .json({ success: true, message: "Profile updated successfully" });
     } catch (error) {
       next(error);
     }
@@ -752,7 +552,7 @@ app.post(
 
       const db = getDb();
       const existingBookmark = await db
-        .collection<TBookmark>("bookmarks")
+        .collection("bookmarks")
         .findOne({ userId, productId });
       if (existingBookmark)
         return res
@@ -765,7 +565,7 @@ app.post(
       if (!product)
         return res.status(404).json({ success: false, message: "Not found" });
 
-      const result = await db.collection<TBookmark>("bookmarks").insertOne({
+      const result = await db.collection("bookmarks").insertOne({
         userId,
         productId,
         productTitle: product.title,
@@ -802,7 +602,7 @@ app.get(
 
       const db = getDb();
       const bookmarks = await db
-        .collection<TBookmark>("bookmarks")
+        .collection("bookmarks")
         .find({ userId })
         .toArray();
       return res.status(200).json(bookmarks);
@@ -830,7 +630,7 @@ app.delete(
 
       const db = getDb();
       const result = await db
-        .collection<TBookmark>("bookmarks")
+        .collection("bookmarks")
         .deleteOne({ userId, productId });
       return res
         .status(200)
@@ -950,15 +750,15 @@ app.get(
   ): Promise<any> => {
     try {
       const db = getDb();
-      const users = await db.collection<TUser>("users").find().toArray();
+      const users = await db.collection<TUser>("user").find().toArray();
       return res.status(200).json(
         users.map((u) => ({
-          id: u._id?.toString(),
-          name: u.username,
+          id: u._id?.toString() || (u as any).id || "",
+          name: u.username || (u as any).name || "",
           email: u.email,
           role: u.role,
           status: u.status,
-          verifiedReporter: u.verifiedReporter,
+          verifiedReporter: u.verifiedWriter,
         })),
       );
     } catch (error) {
@@ -979,13 +779,11 @@ app.patch(
     try {
       const id = req.params.id as string;
       const { role } = req.body;
-      if (!ObjectId.isValid(id))
-        return res.status(400).json({ success: false });
-
+      const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { id };
       const db = getDb();
       const result = await db
-        .collection<TUser>("users")
-        .updateOne({ _id: new ObjectId(id) }, { $set: { role } });
+        .collection<TUser>("user")
+        .updateOne(query as any, { $set: { role } });
       return res
         .status(200)
         .json({ success: true, matchedCount: result.matchedCount });
@@ -1006,13 +804,11 @@ app.patch(
   ): Promise<any> => {
     try {
       const id = req.params.id as string;
-      if (!ObjectId.isValid(id))
-        return res.status(400).json({ success: false });
-
+      const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { id };
       const db = getDb();
       const result = await db
-        .collection<TUser>("users")
-        .updateOne({ _id: new ObjectId(id) }, { $set: { status: "banned" } });
+        .collection<TUser>("user")
+        .updateOne(query as any, { $set: { status: "banned" } });
       return res
         .status(200)
         .json({ success: true, matchedCount: result.matchedCount });
@@ -1033,13 +829,11 @@ app.patch(
   ): Promise<any> => {
     try {
       const id = req.params.id as string;
-      if (!ObjectId.isValid(id))
-        return res.status(400).json({ success: false });
-
+      const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { id };
       const db = getDb();
       const result = await db
-        .collection<TUser>("users")
-        .updateOne({ _id: new ObjectId(id) }, { $set: { status: "active" } });
+        .collection<TUser>("user")
+        .updateOne(query as any, { $set: { status: "active" } });
       return res
         .status(200)
         .json({ success: true, matchedCount: result.matchedCount });
@@ -1060,13 +854,9 @@ app.delete(
   ): Promise<any> => {
     try {
       const id = req.params.id as string;
-      if (!ObjectId.isValid(id))
-        return res.status(400).json({ success: false });
-
+      const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { id };
       const db = getDb();
-      const result = await db
-        .collection<TUser>("users")
-        .deleteOne({ _id: new ObjectId(id) });
+      const result = await db.collection<TUser>("user").deleteOne(query as any);
       return res
         .status(200)
         .json({ success: true, deletedCount: result.deletedCount });
@@ -1149,9 +939,9 @@ app.get(
   ): Promise<any> => {
     try {
       const db = getDb();
-      const totalUsers = await db.collection("users").countDocuments();
+      const totalUsers = await db.collection("user").countDocuments();
       const totalWriters = await db
-        .collection("users")
+        .collection("user")
         .countDocuments({ role: "reporter" });
       const totalEbooks = await db.collection("products").countDocuments();
       const totalSold = await db
@@ -1225,4 +1015,4 @@ async function startServer() {
 
 startServer();
 
-export { app };
+export default app;

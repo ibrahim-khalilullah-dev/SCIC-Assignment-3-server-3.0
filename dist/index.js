@@ -3,20 +3,16 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.app = void 0;
 const dotenv_1 = __importDefault(require("dotenv"));
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
 const cookie_parser_1 = __importDefault(require("cookie-parser"));
-const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const mongodb_1 = require("mongodb");
 const stripe_1 = __importDefault(require("stripe"));
 const db_1 = require("./db");
-const authHelper_1 = require("./utils/authHelper");
 dotenv_1.default.config();
 const PORT = process.env.PORT || 5000;
 const app = (0, express_1.default)();
-exports.app = app;
 const stripe = new stripe_1.default(process.env.STRIPE_SECRET_KEY || "sk_test_mock_key_for_vercel_startup_pass");
 const allowedOrigins = [process.env.CLIENT_URL || "http://localhost:3000"];
 app.use((0, cors_1.default)({
@@ -34,33 +30,63 @@ app.use((0, cors_1.default)({
 }));
 app.use(express_1.default.json());
 app.use((0, cookie_parser_1.default)());
-async function verifyToken(req, res, next) {
-    const token = req.cookies?.token;
-    if (!token)
-        return res.status(401).json({ success: false, message: "No token" });
-    const secret = process.env.ACCESS_TOKEN_SECRET || "fallback_token_secret_string_pap_key";
+app.use(async (req, res, next) => {
     try {
-        const decoded = jsonwebtoken_1.default.verify(token, secret);
+        await (0, db_1.connectDB)();
+        next();
+    }
+    catch (error) {
+        next(error);
+    }
+});
+async function verifyToken(req, res, next) {
+    const authHeader = req.headers?.authorization;
+    let token = authHeader?.split(" ")[1];
+    if (!token) {
+        token =
+            req.cookies?.["better-auth.session_token"] ||
+                req.cookies?.["__Secure-better-auth.session_token"];
+    }
+    if (!token) {
+        return res
+            .status(401)
+            .json({ success: false, message: "Unauthorized access" });
+    }
+    try {
         const db = (0, db_1.getDb)();
-        const user = await db
-            .collection("users")
-            .findOne({ _id: new mongodb_1.ObjectId(decoded.id) });
-        if (!user)
+        const session = await db.collection("session").findOne({ token: token });
+        if (!session) {
             return res
                 .status(401)
-                .json({ success: false, message: "User not found" });
-        if (user.status === "banned")
-            return res.status(403).json({ success: false, message: "Banned" });
+                .json({ success: false, message: "Unauthorized access" });
+        }
+        const userId = session.userId;
+        const userQuery = mongodb_1.ObjectId.isValid(userId)
+            ? { _id: new mongodb_1.ObjectId(userId) }
+            : { id: userId };
+        const user = await db.collection("user").findOne(userQuery);
+        if (!user) {
+            return res
+                .status(401)
+                .json({ success: false, message: "Unauthorized access" });
+        }
+        if (user.status === "banned") {
+            return res
+                .status(403)
+                .json({ success: false, message: "Your account has been banned." });
+        }
         req.user = {
-            id: user._id?.toString() || "",
+            id: user._id?.toString() || user.id || "",
             email: user.email,
             role: user.role,
-            verifiedReporter: user.verifiedReporter,
+            verifiedWriter: user.verifiedWriter,
         };
         next();
     }
     catch {
-        return res.status(401).json({ success: false, message: "Invalid token" });
+        return res
+            .status(401)
+            .json({ success: false, message: "Unauthorized access" });
     }
 }
 function verifyReporter(req, res, next) {
@@ -69,10 +95,8 @@ function verifyReporter(req, res, next) {
             .status(403)
             .json({ success: false, message: "Reporter privileges required" });
     }
-    if (req.user?.role === "reporter" && !req.user?.verifiedReporter) {
-        return res
-            .status(403)
-            .json({
+    if (req.user?.role === "reporter" && !req.user?.verifiedWriter) {
+        return res.status(403).json({
             success: false,
             message: "Verification required. Please complete your fee payment.",
         });
@@ -105,204 +129,6 @@ const mapProduct = (p) => ({
 app.get("/", (req, res) => {
     res.send("Server is up and running!");
 });
-app.post("/api/auth/signup", async (req, res, next) => {
-    try {
-        const { username, email, password } = req.body;
-        if (!username || !email || !password)
-            return res
-                .status(400)
-                .json({ success: false, message: "Required fields missing" });
-        const db = (0, db_1.getDb)();
-        const existingUser = await db
-            .collection("users")
-            .findOne({ email });
-        if (existingUser)
-            return res.status(400).json({ success: false, message: "User exists" });
-        const hash = await (0, authHelper_1.hashPassword)(password);
-        const result = await db.collection("users").insertOne({
-            username,
-            email,
-            password: hash,
-            role: "user",
-            verifiedReporter: false,
-            status: "active",
-            createdAt: new Date(),
-        });
-        const secret = process.env.ACCESS_TOKEN_SECRET ||
-            "fallback_token_secret_string_pap_key";
-        const token = jsonwebtoken_1.default.sign({ id: result.insertedId.toString(), email, role: "user" }, secret, { expiresIn: "1d" });
-        res.cookie("token", token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === "production",
-            sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-            maxAge: 24 * 60 * 60 * 1000,
-        });
-        return res.status(201).json({
-            success: true,
-            user: {
-                id: result.insertedId.toString(),
-                username,
-                email,
-                role: "user",
-                verifiedReporter: false,
-            },
-        });
-    }
-    catch (error) {
-        next(error);
-    }
-});
-app.post("/api/auth/login", async (req, res, next) => {
-    try {
-        const { email, password } = req.body;
-        if (!email || !password)
-            return res
-                .status(400)
-                .json({ success: false, message: "Credentials missing" });
-        const db = (0, db_1.getDb)();
-        const user = await db.collection("users").findOne({ email });
-        if (!user ||
-            !user.password ||
-            !(await (0, authHelper_1.comparePassword)(password, user.password))) {
-            return res
-                .status(401)
-                .json({ success: false, message: "Invalid credentials" });
-        }
-        const secret = process.env.ACCESS_TOKEN_SECRET ||
-            "fallback_token_secret_string_pap_key";
-        const token = jsonwebtoken_1.default.sign({ id: user._id?.toString(), email: user.email, role: user.role }, secret, { expiresIn: "1d" });
-        res.cookie("token", token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === "production",
-            sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-            maxAge: 24 * 60 * 60 * 1000,
-        });
-        return res.status(200).json({
-            success: true,
-            user: {
-                id: user._id?.toString(),
-                username: user.username,
-                email: user.email,
-                role: user.role,
-                verifiedReporter: user.verifiedReporter,
-            },
-        });
-    }
-    catch (error) {
-        next(error);
-    }
-});
-app.get("/api/auth/me", verifyToken, async (req, res, next) => {
-    try {
-        const db = (0, db_1.getDb)();
-        const user = await db
-            .collection("users")
-            .findOne({ _id: new mongodb_1.ObjectId(req.user?.id) });
-        if (!user)
-            return res.status(404).json({ success: false, message: "Not found" });
-        return res
-            .status(200)
-            .json({
-            id: user._id?.toString(),
-            name: user.username,
-            email: user.email,
-            role: user.role,
-            verifiedReporter: user.verifiedReporter,
-        });
-    }
-    catch (error) {
-        next(error);
-    }
-});
-app.patch("/api/users/profile", verifyToken, async (req, res, next) => {
-    try {
-        const { name, image } = req.body;
-        const db = (0, db_1.getDb)();
-        const updateDoc = {};
-        if (name)
-            updateDoc.username = name;
-        if (image)
-            updateDoc.image = image;
-        const result = await db
-            .collection("users")
-            .updateOne({ _id: new mongodb_1.ObjectId(req.user?.id) }, { $set: updateDoc });
-        return res.status(200).json({
-            success: true,
-            matchedCount: result.matchedCount,
-        });
-    }
-    catch (error) {
-        next(error);
-    }
-});
-app.post("/api/auth/logout", (req, res) => {
-    res.clearCookie("token", {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-        path: "/",
-    });
-    return res.status(200).json({ success: true, message: "Logged out" });
-});
-app.post("/api/auth/google", async (req, res, next) => {
-    try {
-        const { idToken } = req.body;
-        if (!idToken)
-            return res
-                .status(400)
-                .json({ success: false, message: "Token missing" });
-        const googleRes = await fetch("https://oauth2.googleapis.com/tokeninfo?id_token=" + idToken);
-        if (!googleRes.ok)
-            return res
-                .status(401)
-                .json({ success: false, message: "Invalid Google token" });
-        const payload = (await googleRes.json());
-        const { email, name } = payload;
-        const db = (0, db_1.getDb)();
-        let user = await db.collection("users").findOne({ email });
-        if (!user) {
-            const result = await db.collection("users").insertOne({
-                username: name || email.split("@")[0],
-                email,
-                role: "user",
-                verifiedReporter: false,
-                status: "active",
-                createdAt: new Date(),
-            });
-            user = {
-                _id: result.insertedId,
-                username: name || email.split("@")[0],
-                email,
-                role: "user",
-                verifiedReporter: false,
-                status: "active",
-                createdAt: new Date(),
-            };
-        }
-        const secret = process.env.ACCESS_TOKEN_SECRET ||
-            "fallback_token_secret_string_pap_key";
-        const token = jsonwebtoken_1.default.sign({ id: user._id?.toString(), email: user.email, role: user.role }, secret, { expiresIn: "1d" });
-        res.cookie("token", token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === "production",
-            sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-            maxAge: 24 * 60 * 60 * 1000,
-        });
-        return res.status(200).json({
-            success: true,
-            user: {
-                id: user._id?.toString(),
-                username: user.username,
-                email: user.email,
-                role: user.role,
-                verifiedReporter: user.verifiedReporter,
-            },
-        });
-    }
-    catch (error) {
-        next(error);
-    }
-});
 app.get("/api/products", async (req, res, next) => {
     try {
         const { search, category, minPrice, maxPrice } = req.query;
@@ -334,7 +160,8 @@ app.get("/api/products/:id", async (req, res, next) => {
         const id = req.params.id;
         if (!mongodb_1.ObjectId.isValid(id))
             return res.status(400).json({ success: false });
-        const p = await (0, db_1.getDb)()
+        const db = (0, db_1.getDb)();
+        const p = await db
             .collection("products")
             .findOne({ _id: new mongodb_1.ObjectId(id) });
         return p
@@ -517,9 +344,7 @@ app.get("/api/verify-payment", verifyToken, async (req, res, next) => {
             .collection("transactions")
             .findOne({ transactionId: session_id });
         if (existingTx)
-            return res
-                .status(200)
-                .json({
+            return res.status(200).json({
                 success: true,
                 alreadyProcessed: true,
                 transaction: existingTx,
@@ -542,8 +367,8 @@ app.get("/api/verify-payment", verifyToken, async (req, res, next) => {
         await db.collection("transactions").insertOne(txRecord);
         if (type === "publishing fee") {
             await db
-                .collection("users")
-                .updateOne({ email: buyerEmail }, { $set: { verifiedReporter: true, role: "reporter" } });
+                .collection("user")
+                .updateOne({ email: buyerEmail }, { $set: { verifiedWriter: true } });
         }
         else if (type === "purchase" && productId) {
             const product = await db
@@ -558,6 +383,30 @@ app.get("/api/verify-payment", verifyToken, async (req, res, next) => {
             }
         }
         return res.status(200).json({ success: true, transaction: txRecord });
+    }
+    catch (error) {
+        next(error);
+    }
+});
+app.patch("/api/users/profile", verifyToken, async (req, res, next) => {
+    try {
+        const { name, image } = req.body;
+        if (!name) {
+            return res
+                .status(400)
+                .json({ success: false, message: "Name is required" });
+        }
+        const db = (0, db_1.getDb)();
+        const userId = req.user?.id;
+        const query = mongodb_1.ObjectId.isValid(userId || "")
+            ? { _id: new mongodb_1.ObjectId(userId) }
+            : { id: userId };
+        await db.collection("user").updateOne(query, {
+            $set: { name, image },
+        });
+        return res
+            .status(200)
+            .json({ success: true, message: "Profile updated successfully" });
     }
     catch (error) {
         next(error);
@@ -706,14 +555,14 @@ app.get("/api/user/purchased-products", verifyToken, async (req, res, next) => {
 app.get("/api/admin/users", verifyToken, verifyAdmin, async (req, res, next) => {
     try {
         const db = (0, db_1.getDb)();
-        const users = await db.collection("users").find().toArray();
+        const users = await db.collection("user").find().toArray();
         return res.status(200).json(users.map((u) => ({
-            id: u._id?.toString(),
-            name: u.username,
+            id: u._id?.toString() || u.id || "",
+            name: u.username || u.name || "",
             email: u.email,
             role: u.role,
             status: u.status,
-            verifiedReporter: u.verifiedReporter,
+            verifiedReporter: u.verifiedWriter,
         })));
     }
     catch (error) {
@@ -724,12 +573,11 @@ app.patch("/api/admin/users/:id/role", verifyToken, verifyAdmin, async (req, res
     try {
         const id = req.params.id;
         const { role } = req.body;
-        if (!mongodb_1.ObjectId.isValid(id))
-            return res.status(400).json({ success: false });
+        const query = mongodb_1.ObjectId.isValid(id) ? { _id: new mongodb_1.ObjectId(id) } : { id };
         const db = (0, db_1.getDb)();
         const result = await db
-            .collection("users")
-            .updateOne({ _id: new mongodb_1.ObjectId(id) }, { $set: { role } });
+            .collection("user")
+            .updateOne(query, { $set: { role } });
         return res
             .status(200)
             .json({ success: true, matchedCount: result.matchedCount });
@@ -741,12 +589,11 @@ app.patch("/api/admin/users/:id/role", verifyToken, verifyAdmin, async (req, res
 app.patch("/api/admin/users/:id/ban", verifyToken, verifyAdmin, async (req, res, next) => {
     try {
         const id = req.params.id;
-        if (!mongodb_1.ObjectId.isValid(id))
-            return res.status(400).json({ success: false });
+        const query = mongodb_1.ObjectId.isValid(id) ? { _id: new mongodb_1.ObjectId(id) } : { id };
         const db = (0, db_1.getDb)();
         const result = await db
-            .collection("users")
-            .updateOne({ _id: new mongodb_1.ObjectId(id) }, { $set: { status: "banned" } });
+            .collection("user")
+            .updateOne(query, { $set: { status: "banned" } });
         return res
             .status(200)
             .json({ success: true, matchedCount: result.matchedCount });
@@ -758,12 +605,11 @@ app.patch("/api/admin/users/:id/ban", verifyToken, verifyAdmin, async (req, res,
 app.patch("/api/admin/users/:id/unban", verifyToken, verifyAdmin, async (req, res, next) => {
     try {
         const id = req.params.id;
-        if (!mongodb_1.ObjectId.isValid(id))
-            return res.status(400).json({ success: false });
+        const query = mongodb_1.ObjectId.isValid(id) ? { _id: new mongodb_1.ObjectId(id) } : { id };
         const db = (0, db_1.getDb)();
         const result = await db
-            .collection("users")
-            .updateOne({ _id: new mongodb_1.ObjectId(id) }, { $set: { status: "active" } });
+            .collection("user")
+            .updateOne(query, { $set: { status: "active" } });
         return res
             .status(200)
             .json({ success: true, matchedCount: result.matchedCount });
@@ -775,12 +621,9 @@ app.patch("/api/admin/users/:id/unban", verifyToken, verifyAdmin, async (req, re
 app.delete("/api/admin/users/:id", verifyToken, verifyAdmin, async (req, res, next) => {
     try {
         const id = req.params.id;
-        if (!mongodb_1.ObjectId.isValid(id))
-            return res.status(400).json({ success: false });
+        const query = mongodb_1.ObjectId.isValid(id) ? { _id: new mongodb_1.ObjectId(id) } : { id };
         const db = (0, db_1.getDb)();
-        const result = await db
-            .collection("users")
-            .deleteOne({ _id: new mongodb_1.ObjectId(id) });
+        const result = await db.collection("user").deleteOne(query);
         return res
             .status(200)
             .json({ success: true, deletedCount: result.deletedCount });
@@ -834,9 +677,9 @@ app.get("/api/admin/transactions", verifyToken, verifyAdmin, async (req, res, ne
 app.get("/api/admin/analytics", verifyToken, verifyAdmin, async (req, res, next) => {
     try {
         const db = (0, db_1.getDb)();
-        const totalUsers = await db.collection("users").countDocuments();
+        const totalUsers = await db.collection("user").countDocuments();
         const totalWriters = await db
-            .collection("users")
+            .collection("user")
             .countDocuments({ role: "reporter" });
         const totalEbooks = await db.collection("products").countDocuments();
         const totalSold = await db
@@ -902,3 +745,4 @@ async function startServer() {
     }
 }
 startServer();
+exports.default = app;

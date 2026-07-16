@@ -6,7 +6,7 @@ export interface TUser {
   email: string;
   password?: string;
   role: "user" | "reporter" | "admin";
-  verifiedReporter: boolean;
+  verifiedWriter: boolean;
   status: "active" | "banned";
   image?: string;
   createdAt: Date;

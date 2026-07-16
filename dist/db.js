@@ -12,7 +12,13 @@ const uri = process.env.MONGO_URI;
 if (!uri) {
     throw new Error("MONGO_URI is not defined in environment variables");
 }
-const client = new mongodb_1.MongoClient(uri);
+const client = new mongodb_1.MongoClient(uri, {
+    serverApi: {
+        version: mongodb_1.ServerApiVersion.v1,
+        strict: true,
+        deprecationErrors: true,
+    },
+});
 let db;
 async function connectDB() {
     if (!db) {

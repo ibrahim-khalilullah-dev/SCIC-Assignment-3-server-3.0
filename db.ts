@@ -1,5 +1,5 @@
 import dotenv from "dotenv";
-import { MongoClient, Db } from "mongodb";
+import { MongoClient, Db, ServerApiVersion } from "mongodb";
 
 dotenv.config();
 
@@ -8,7 +8,14 @@ if (!uri) {
   throw new Error("MONGO_URI is not defined in environment variables");
 }
 
-const client = new MongoClient(uri);
+const client = new MongoClient(uri, {
+  serverApi: {
+    version: ServerApiVersion.v1,
+    strict: true,
+    deprecationErrors: true,
+  },
+});
+
 let db: Db;
 
 export async function connectDB(): Promise<void> {
