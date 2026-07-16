@@ -86,7 +86,7 @@ async function verifyToken(
     const userId = session.userId;
     const userQuery = ObjectId.isValid(userId)
       ? { _id: new ObjectId(userId) }
-      : { id: userId };
+      : { _id: userId };
     const user = await db.collection<TUser>("user").findOne(userQuery as any);
 
     if (!user) {
@@ -104,8 +104,9 @@ async function verifyToken(
     req.user = {
       id: user._id?.toString() || (user as any).id || "",
       email: user.email,
-      role: user.role,
-      verifiedWriter: user.verifiedWriter,
+      role: user.role || (user as any).userRole || "user",
+      verifiedWriter:
+        user.verifiedWriter || (user as any).verifiedWriter || false,
     };
     next();
   } catch {
@@ -519,7 +520,7 @@ app.patch(
       const userId = req.user?.id;
       const query = ObjectId.isValid(userId || "")
         ? { _id: new ObjectId(userId) }
-        : { id: userId };
+        : { _id: userId };
 
       await db.collection("user").updateOne(query as any, {
         $set: { name, image },
@@ -756,7 +757,7 @@ app.get(
           id: u._id?.toString() || (u as any).id || "",
           name: u.username || (u as any).name || "",
           email: u.email,
-          role: u.role,
+          role: u.role || (u as any).userRole || "user",
           status: u.status,
           verifiedReporter: u.verifiedWriter,
         })),
@@ -779,11 +780,13 @@ app.patch(
     try {
       const id = req.params.id as string;
       const { role } = req.body;
-      const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { id };
+      const query = ObjectId.isValid(id)
+        ? { _id: new ObjectId(id) }
+        : { _id: id };
       const db = getDb();
       const result = await db
         .collection<TUser>("user")
-        .updateOne(query as any, { $set: { role } });
+        .updateOne(query as any, { $set: { role, userRole: role } });
       return res
         .status(200)
         .json({ success: true, matchedCount: result.matchedCount });
@@ -804,7 +807,9 @@ app.patch(
   ): Promise<any> => {
     try {
       const id = req.params.id as string;
-      const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { id };
+      const query = ObjectId.isValid(id)
+        ? { _id: new ObjectId(id) }
+        : { _id: id };
       const db = getDb();
       const result = await db
         .collection<TUser>("user")
@@ -829,7 +834,9 @@ app.patch(
   ): Promise<any> => {
     try {
       const id = req.params.id as string;
-      const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { id };
+      const query = ObjectId.isValid(id)
+        ? { _id: new ObjectId(id) }
+        : { _id: id };
       const db = getDb();
       const result = await db
         .collection<TUser>("user")
@@ -854,7 +861,9 @@ app.delete(
   ): Promise<any> => {
     try {
       const id = req.params.id as string;
-      const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { id };
+      const query = ObjectId.isValid(id)
+        ? { _id: new ObjectId(id) }
+        : { _id: id };
       const db = getDb();
       const result = await db.collection<TUser>("user").deleteOne(query as any);
       return res
